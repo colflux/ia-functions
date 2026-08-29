@@ -1,0 +1,35 @@
+services:
+  api:
+    build: .
+    ports:
+      - "8001:8000"
+    env_file:
+      - .env
+    depends_on:
+      - db
+    volumes:
+      - ./app:/app/app
+
+  db:
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: colflux
+      POSTGRES_PASSWORD: colflux
+      POSTGRES_DB: colflux_ia
+    ports:
+      - "5433:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+
+  ollama:
+    image: ollama/ollama
+    profiles:
+      - ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+
+volumes:
+  db_data:
+  ollama_data:
