@@ -21,6 +21,7 @@ class Settings(BaseSettings):
     database_url: str = "postgresql://colflux:colflux@db:5432/colflux_ia"
 
     retrieval_top_k: int = 4
+    retrieval_min_score: float = 0.3
 
     class Config:
         env_file = ".env"
