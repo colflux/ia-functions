@@ -1,6 +1,7 @@
 services:
   api:
     build: .
+    restart: unless-stopped
     ports:
       # Atado a loopback: en producción nginx (puerto 80, público) es quien
       # enruta hacia acá — el puerto directo no debe quedar expuesto a
@@ -16,6 +17,7 @@ services:
 
   mcp-backend:
     build: .
+    restart: unless-stopped
     command: python -m mcp_server
     ports:
       # Solo para depurar desde el propio servidor (curl local) — el
@@ -35,6 +37,7 @@ services:
 
   db:
     image: pgvector/pgvector:pg16
+    restart: unless-stopped
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-colflux}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-colflux}
