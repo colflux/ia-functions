@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8">
+<title>colflux IA · chat de prueba</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 700px; margin: 2rem auto; padding: 0 1rem; }
+  h1 { font-size: 1.2rem; }
+  #config { display: flex; gap: .5rem; margin-bottom: 1rem; flex-wrap: wrap; }
+  #config input { flex: 1; padding: .4rem; min-width: 120px; }
+  #log { border: 1px solid #ccc; border-radius: 8px; padding: 1rem; height: 420px; overflow-y: auto; margin-bottom: .5rem; background: #fafafa; }
+  .msg { margin-bottom: .8rem; white-space: pre-wrap; }
+  .msg .role { font-weight: bold; }
+  .user { color: #0b5; }
+  .assistant { color: #06c; }
+  .meta { font-size: .75rem; color: #888; margin-top: .2rem; }
+  form { display: flex; gap: .5rem; }
+  input[type=text] { flex: 1; padding: .5rem; }
+  button { padding: .5rem 1rem; cursor: pointer; }
+  #ingest { margin-top: 1.5rem; border-top: 1px solid #ddd; padding-top: 1rem; }
+  #ingest textarea { width: 100%; height: 80px; margin: .3rem 0; }
+  small { color: #888; }
+</style>
+</head>
+<body>
+  <h1>colflux IA · chat de prueba</h1>
+
+  <div id="config">
+    <input id="apiUrl" type="text" value="http://localhost:8001" title="URL base de la API">
+    <input id="usuario" type="text" value="test-html" title="usuario (id de conversación)">
+    <button onclick="cargarHistorial()">Cargar historial</button>
+  </div>
+
+  <div id="log"></div>
+
+  <form id="chatForm">
+    <input id="message" type="text" placeholder="Escribe un mensaje..." autocomplete="off" required>
+    <button type="submit">Enviar</button>
+  </form>
+
+  <details id="ingest">
+    <summary>Ingestar documento (POST /ingest)</summary>
+    <input id="source" type="text" placeholder="source (ej. reporte-2024.pdf)" style="width:100%">
+    <textarea id="text" placeholder="Texto del documento..."></textarea>
+    <select id="collection">
+      <option value="documents">documents</option>
+      <option value="dictionary">dictionary</option>
+    </select>
+    <button onclick="ingestar()" type="button">Ingestar</button>
+    <div id="ingestResult"></div>
+  </details>
+
+  <script>
+    const log = document.getElementById('log');
+    const apiUrl = () => document.getElementById('apiUrl').value.replace(/\/$/, '');
+    const usuario = () => document.getElementById('usuario').value;
+
+    function append(role, text, meta) {
+      const div = document.createElement('div');
+      div.className = 'msg ' + role;
+      div.innerHTML = `<span class="role">${role}:</span> ${text}` + (meta ? `<div class="meta">${meta}</div>` : '');
+      log.appendChild(div);
+      log.scrollTop = log.scrollHeight;
+    }
+
+    document.getElementById('chatForm').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const input = document.getElementById('message');
+      const message = input.value.trim();
+      if (!message) return;
+      append('user', message);
+      input.value = '';
+      try {
+        const res = await fetch(apiUrl() + '/chat', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ message, usuario: usuario() }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+        const data = await res.json();
+        const meta = [
+          data.sources?.length ? `fuentes: ${data.sources.join(', ')}` : null,
+          data.herramientas?.length ? `tools: ${data.herramientas.join(', ')}` : null,
+          data.pendiente_de_confirmacion ? `pendiente: ${JSON.stringify(data.pendiente_de_confirmacion)}` : null,
+        ].filter(Boolean).join(' · ');
+        append('assistant', data.answer, meta);
+      } catch (err) {
+        append('assistant', '⚠️ ' + err.message);
+      }
+    });
+
+    async function cargarHistorial() {
+      log.innerHTML = '';
+      try {
+        const res = await fetch(`${apiUrl()}/chat/historial?usuario=${encodeURIComponent(usuario())}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+        const data = await res.json();
+        data.messages.forEach(m => append(m.role === 'user' ? 'user' : 'assistant', m.content));
+      } catch (err) {
+        append('assistant', '⚠️ ' + err.message);
+      }
+    }
+
+    async function ingestar() {
+      const source = document.getElementById('source').value;
+      const text = document.getElementById('text').value;
+      const collection = document.getElementById('collection').value;
+      const result = document.getElementById('ingestResult');
+      try {
+        const res = await fetch(apiUrl() + '/ingest', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ source, text, collection }),
+        });
+        if (!res.ok) throw new Error(`HTTP ${res.status}: ${await res.text()}`);
+        const data = await res.json();
+        result.textContent = `✅ ${data.chunks_indexed} fragmentos indexados`;
+      } catch (err) {
+        result.textContent = '⚠️ ' + err.message;
+      }
+    }
+  </script>
+</body>
+</html>
