@@ -25,6 +25,20 @@ class RagService:
         min_score: float,
         collection: str = DEFAULT_COLLECTION,
     ) -> list[RetrievedChunk]:
-        query_embedding = self._embeddings.embed([question])[0]
+        query_embedding = self._embeddings.embed([question], kind="query")[0]
         matches = self._vector_store.search(query_embedding, top_k, collection)
         return [m for m in matches if m.score >= min_score]
+
+    def reindexar_pendientes(self, lote: int = 32) -> int:
+        """Recalcula los vectores de los fragmentos que no tienen ninguno —
+        por ejemplo después de cambiar de modelo de embeddings. El texto ya
+        está guardado, así que no hace falta volver a subir los documentos."""
+        total = 0
+        while True:
+            pendientes = self._vector_store.pendientes_de_reindexar(lote)
+            if not pendientes:
+                return total
+            vectores = self._embeddings.embed([texto for _, texto in pendientes])
+            for (chunk_id, _), vector in zip(pendientes, vectores):
+                self._vector_store.guardar_embedding(chunk_id, vector)
+            total += len(pendientes)

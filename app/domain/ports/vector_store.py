@@ -22,3 +22,14 @@ class VectorStore(ABC):
         collection: str,
     ) -> list[RetrievedChunk]:
         raise NotImplementedError
+
+    @abstractmethod
+    def pendientes_de_reindexar(self, limite: int) -> list[tuple[int, str]]:
+        """Fragmentos cuyo vector está vacío — por ejemplo tras cambiar de
+        modelo de embeddings. Devuelve pares (id, texto)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def guardar_embedding(self, chunk_id: int, embedding: list[float]) -> None:
+        """Escribe el vector recalculado de un fragmento existente."""
+        raise NotImplementedError
