@@ -84,7 +84,10 @@ class AgentOrchestrator:
                     )
                 )
 
-        answer = reply.text if reply else ""
+        answer = (reply.text if reply else "") or (
+            "No pude completar la consulta con las herramientas disponibles. "
+            "Intenta reformular la pregunta o indicar el sitio por su nombre o número."
+        )
         unique_sources = self._dedupe_sources(sources)
 
         if pending:
