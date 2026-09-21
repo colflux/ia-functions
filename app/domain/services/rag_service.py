@@ -39,6 +39,6 @@ class RagService:
             if not pendientes:
                 return total
             vectores = self._embeddings.embed([texto for _, texto in pendientes])
-            for (chunk_id, _), vector in zip(pendientes, vectores):
-                self._vector_store.guardar_embedding(chunk_id, vector)
+            pares = [(cid, v) for (cid, _), v in zip(pendientes, vectores)]
+            self._vector_store.guardar_embeddings(pares)
             total += len(pendientes)

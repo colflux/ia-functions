@@ -30,6 +30,6 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def guardar_embedding(self, chunk_id: int, embedding: list[float]) -> None:
-        """Escribe el vector recalculado de un fragmento existente."""
+    def guardar_embeddings(self, pares: list[tuple[int, list[float]]]) -> None:
+        """Escribe en lote los vectores recalculados de fragmentos existentes."""
         raise NotImplementedError

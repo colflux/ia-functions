@@ -57,10 +57,12 @@ class PgVectorStore(VectorStore):
                 )
                 return [(r[0], r[1]) for r in cur.fetchall()]
 
-    def guardar_embedding(self, chunk_id: int, embedding: list[float]) -> None:
+    def guardar_embeddings(self, pares: list[tuple[int, list[float]]]) -> None:
+        if not pares:
+            return
         with get_connection() as conn:
             with conn.cursor() as cur:
-                cur.execute(
+                cur.executemany(
                     "UPDATE document_chunks SET embedding = %s WHERE id = %s",
-                    (Vector(embedding), chunk_id),
+                    [(Vector(vector), chunk_id) for chunk_id, vector in pares],
                 )
