@@ -26,7 +26,9 @@ def consultar_promedio(variable: str, sitio: str | None = None,
         features = resumen.get("features", [])
         if not features:
             return {"variable": variable, "sitio": sitio_obj["nombre"], "sin_datos": True}
-        props = features[0]["properties"]
+        props = backend_client.buscar_feature(resumen, sitio_obj["id"])
+        if props is None:
+            return {"variable": variable, "sitio": sitio_obj["nombre"], "sin_datos": True}
         return {
             "variable": variable, "sitio": sitio_obj["nombre"],
             "n": props.get("total_muestras"), "promedio": props.get("promedio"),
@@ -58,9 +60,10 @@ def consultar_ultima_medicion(variable: str, sitio: str | None = None) -> dict:
     if sitio_obj:
         resumen = backend_client.get_resumen("sitio", gas=variable, sitio=sitio_obj["id"])
         features = resumen.get("features", [])
-        if not features or not features[0]["properties"].get("ultima_medicion"):
+        props = backend_client.buscar_feature(resumen, sitio_obj["id"])
+        if props is None or not props.get("ultima_medicion"):
             return {"variable": variable, "sitio": sitio_obj["nombre"], "sin_datos": True}
-        return {"variable": variable, "sitio": sitio_obj["nombre"], "ultima": features[0]["properties"]["ultima_medicion"]}
+        return {"variable": variable, "sitio": sitio_obj["nombre"], "ultima": props["ultima_medicion"]}
 
     series = backend_client.get_series(gas=variable)
     if not series:

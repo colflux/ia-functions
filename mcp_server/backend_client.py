@@ -2,6 +2,8 @@
 Solo consume endpoints GET existentes — no toca ese repositorio ni su base
 de datos."""
 
+import re
+
 import httpx
 
 from mcp_server.config import BACKEND_API_BASE_URL
@@ -21,16 +23,22 @@ def get_sitios(filtro: str | None = None) -> list[dict]:
     sitios = []
     for feature in data.get("features", []):
         props = feature.get("properties", {})
-        nombre = props.get("nombre", "")
-        if filtro and filtro.lower() not in nombre.lower():
+        nombre = (props.get("nombre") or "").strip()
+        vereda = props.get("vereda") or ""
+        municipio = props.get("municipio") or ""
+        if not nombre:
+            partes = ", ".join(p for p in (vereda, municipio) if p)
+            nombre = "Sitio %s%s" % (props.get("id"), " (" + partes + ")" if partes else "")
+        if filtro and filtro.lower() not in " ".join([nombre, vereda, municipio]).lower():
             continue
         lon, lat = feature.get("geometry", {}).get("coordinates", [None, None])
         sitios.append({
             "id": props.get("id"),
             "nombre": nombre,
+            "vereda": vereda or None,
+            "municipio": municipio or None,
             "latitud": lat,
             "longitud": lon,
-            "resumen_por_gas": props.get("resumen_por_gas", {}),
         })
     return sitios
 
@@ -39,6 +47,11 @@ def resolve_sitio(nombre: str) -> tuple[dict | None, dict | None]:
     """Busca un sitio por nombre parcial. Devuelve (sitio, error)."""
     if not nombre:
         return None, None
+    m = re.search(r"\b(\d+)\b", str(nombre))
+    if m:
+        por_id = [s for s in get_sitios() if s["id"] == int(m.group(1))]
+        if por_id:
+            return por_id[0], None
     matches = get_sitios(filtro=nombre)
     if not matches:
         return None, {
@@ -62,3 +75,13 @@ def get_series(gas: str | None = None, desde: str | None = None,
                 hasta: str | None = None, sitio: int | None = None) -> list[dict]:
     data = _get("/api/geo/series/", {"gas": gas, "desde": desde, "hasta": hasta, "sitio": sitio})
     return data.get("resultados", [])
+
+
+def buscar_feature(resumen: dict, sitio_id: int) -> dict | None:
+    """Selecciona del resumen el feature del sitio pedido, en vez de asumir que
+    viene primero: al consultar por otros niveles el resumen agrupa varios
+    sitios, y el orden no está garantizado."""
+    for f in resumen.get("features", []):
+        if f.get("properties", {}).get("id") == sitio_id:
+            return f["properties"]
+    return None
