@@ -1,9 +1,12 @@
+import os
+import re
+
 import psycopg
 from pgvector.psycopg import register_vector
 
 from app.config import settings
 
-EMBEDDING_DIM = 384  # all-MiniLM-L6-v2
+EMBEDDING_DIM = int(os.environ.get("EMBEDDING_DIM", "384"))
 
 
 def get_connection() -> psycopg.Connection:
@@ -27,6 +30,7 @@ def init_schema() -> None:
             )
             """
         )
+        _migrar_dimension(conn)
         conn.execute(
             "CREATE INDEX IF NOT EXISTS document_chunks_collection_idx "
             "ON document_chunks (collection)"
@@ -72,3 +76,30 @@ def init_schema() -> None:
             "CREATE INDEX IF NOT EXISTS pending_confirmations_user_idx "
             "ON pending_confirmations (external_user_id, resolved, created_at)"
         )
+
+
+def _dimension_actual(conn) -> int | None:
+    """Dimensión declarada hoy en document_chunks.embedding, o None si la
+    tabla todavía no existe."""
+    fila = conn.execute(
+        "SELECT format_type(a.atttypid, a.atttypmod) "
+        "FROM pg_attribute a JOIN pg_class c ON c.oid = a.attrelid "
+        "WHERE c.relname = %s AND a.attname = %s AND NOT a.attisdropped",
+        ("document_chunks", "embedding"),
+    ).fetchone()
+    if not fila:
+        return None
+    m = re.search(r"\((\d+)\)", fila[0])
+    return int(m.group(1)) if m else None
+
+
+def _migrar_dimension(conn) -> None:
+    """Al cambiar de modelo de embeddings la dimensión deja de coincidir y
+    los vectores guardados dejan de ser comparables entre sí. Se conserva el
+    texto y se vacían los vectores: se recalculan al arrancar."""
+    actual = _dimension_actual(conn)
+    if actual is None or actual == EMBEDDING_DIM:
+        return
+    print(f"[schema] embedding: vector({actual}) -> vector({EMBEDDING_DIM}); se reindexará el contenido", flush=True)
+    conn.execute("ALTER TABLE document_chunks DROP COLUMN embedding")
+    conn.execute(f"ALTER TABLE document_chunks ADD COLUMN embedding VECTOR({EMBEDDING_DIM})")

@@ -46,3 +46,23 @@ class PgVectorStore(VectorStore):
                 )
                 rows = cur.fetchall()
         return [RetrievedChunk(source=r[0], content=r[1], score=r[2]) for r in rows]
+
+    def pendientes_de_reindexar(self, limite: int) -> list[tuple[int, str]]:
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT id, content FROM document_chunks "
+                    "WHERE embedding IS NULL ORDER BY id LIMIT %s",
+                    (limite,),
+                )
+                return [(r[0], r[1]) for r in cur.fetchall()]
+
+    def guardar_embeddings(self, pares: list[tuple[int, list[float]]]) -> None:
+        if not pares:
+            return
+        with get_connection() as conn:
+            with conn.cursor() as cur:
+                cur.executemany(
+                    "UPDATE document_chunks SET embedding = %s WHERE id = %s",
+                    [(Vector(vector), chunk_id) for chunk_id, vector in pares],
+                )

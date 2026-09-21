@@ -9,7 +9,8 @@ backend Django vía un servidor MCP propio.
 - [x] **Funcionalidad 1 — RAG documental**: confirmada, con fragmentación
   tipo compañero (párrafos completos, corte por frases, solapamiento por
   cola de frases) en vez del corte por conteo fijo de palabras. Embeddings
-  se mantienen locales (sentence-transformers).
+  se mantienen locales (sentence-transformers), con el modelo multilingüe
+  `multilingual-e5-base` — ver `specs/embeddings-espanol.md`.
 - [x] **Funcionalidad 2 — Colección "diccionario de campo"**: confirmada.
   Una sola tabla (`document_chunks`) con columna `collection`
   (`documents`/`dictionary`), en vez de las dos tablas separadas
