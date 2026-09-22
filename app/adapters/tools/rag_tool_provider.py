@@ -36,7 +36,10 @@ class RagToolProvider(ToolProvider):
                 name="buscar_diccionario",
                 description=(
                     "Busca por significado en el diccionario de observaciones cualitativas "
-                    "de campo (olores, colores, texturas del suelo, etc.)."
+                    "de campo: olores, colores, texturas del suelo, y frases como que el "
+                    "suelo esta respirando fuerte, que el humedal esta hirviendo o que la "
+                    "zona esta apagada. Usala siempre que la pregunta incluya una expresion "
+                    "de ese tipo, antes de consultar las mediciones."
                 ),
                 parameters={
                     "type": "object",
