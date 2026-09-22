@@ -2,10 +2,13 @@ from pydantic_settings import BaseSettings
 
 
 class Settings(BaseSettings):
-    llm_provider: str = "groq"  # groq | gemini | ollama | anthropic
+    llm_provider: str = "groq"  # groq | cerebras | gemini | ollama | anthropic
 
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
+
+    cerebras_api_key: str = ""
+    cerebras_model: str = "gpt-oss-120b"
 
     gemini_api_key: str = ""
     gemini_model: str = "gemini-1.5-flash"

@@ -6,6 +6,7 @@ from functools import lru_cache
 
 from app.adapters.embeddings.sentence_transformers_provider import SentenceTransformersProvider
 from app.adapters.llm.anthropic import AnthropicProvider
+from app.adapters.llm.cerebras import CerebrasProvider
 from app.adapters.llm.gemini import GeminiProvider
 from app.adapters.llm.groq import GroqProvider
 from app.adapters.llm.ollama import OllamaProvider
@@ -18,6 +19,7 @@ from app.domain.ports.llm_provider import LLMProvider
 from app.domain.services.agent_orchestrator import AgentOrchestrator
 from app.domain.services.rag_service import RagService
 from app.domain.services.tool_registry import ToolRegistry
+from app.domain.services.tool_router import ToolRouter
 
 
 @lru_cache
@@ -25,6 +27,8 @@ def get_llm_provider() -> LLMProvider:
     provider = settings.llm_provider.lower()
     if provider == "groq":
         return GroqProvider()
+    if provider == "cerebras":
+        return CerebrasProvider()
     if provider == "gemini":
         return GeminiProvider()
     if provider == "ollama":
@@ -35,8 +39,15 @@ def get_llm_provider() -> LLMProvider:
 
 
 @lru_cache
+def get_embedding_provider() -> SentenceTransformersProvider:
+    """Una sola instancia: el modelo ocupa 1,2 GB y lo comparten el RAG y el
+    enrutador de herramientas."""
+    return SentenceTransformersProvider(settings.embedding_model)
+
+
+@lru_cache
 def get_rag_service() -> RagService:
-    embeddings = SentenceTransformersProvider(settings.embedding_model)
+    embeddings = get_embedding_provider()
     vector_store = PgVectorStore()
     return RagService(embeddings, vector_store)
 
@@ -64,4 +75,6 @@ def get_conversation_repository() -> PostgresConversationRepository:
 
 @lru_cache
 def get_orchestrator() -> AgentOrchestrator:
-    return AgentOrchestrator(get_llm_provider(), get_tool_registry(), get_conversation_repository())
+    return AgentOrchestrator(get_llm_provider(), get_tool_registry(),
+                             get_conversation_repository(),
+                             ToolRouter(get_embedding_provider()))
