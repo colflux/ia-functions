@@ -7,23 +7,6 @@ este endpoint: se consultan con consultar_datos_campo (tools/datos.py)."""
 from mcp_server import backend_client
 from mcp_server.backend_client import GASES
 
-# Categorías que dependen de un cambio del backend que aún no está desplegado.
-# Se comprueba una vez y se recuerda, para avisar en vez de devolver un 500.
-CATEGORIAS_EXTENDIDAS = ("produccion",)
-
-_DISPONIBLES: dict = {}
-
-
-def _categoria_disponible(cat: str) -> bool:
-    if cat not in _DISPONIBLES:
-        try:
-            backend_client.get_resumen("departamento", categoria=cat)
-            _DISPONIBLES[cat] = True
-        except Exception:
-            _DISPONIBLES[cat] = False
-    return _DISPONIBLES[cat]
-
-
 CATEGORIAS = ("flujos", "biomasa", "cos", "produccion")
 
 NOTA_SIN_UNIDAD = (
@@ -61,12 +44,6 @@ def _preparar(variable: str, categoria: str) -> tuple[str | None, str, dict | No
                 "cos": "carbono orgánico del suelo",
                 "produccion": "producción de biomasa en gramos",
             },
-        }
-    if cat in CATEGORIAS_EXTENDIDAS and not _categoria_disponible(cat):
-        return None, "", {
-            "error": "La categoría " + cat + " necesita una versión del backend que "
-                     "todavía no está desplegada.",
-            "categorias_disponibles": ["flujos", "biomasa", "cos"],
         }
     if cat != "flujos":
         return None, cat, None
