@@ -7,8 +7,8 @@ consultan con consultar_promedio, que los devuelve ya resumidos."""
 import re
 
 from mcp_server import backend_client
+from mcp_server.geografia import nivel_de
 from mcp_server.catalogo import VISTAS
-from mcp_server.texto import normalizar
 
 def _clave_fecha(datos: dict) -> str:
     """La clave Modelo.campo de la columna de fecha de la vista, si la hay. Se
@@ -44,21 +44,6 @@ def _estadisticas(filas: list[dict]) -> dict:
                 "minimo": min(v), "maximo": max(v)}
         for clave, v in acumulado.items() if len(v) > 1
     }
-
-def _nivel_geografico(texto: str) -> str:
-    """Si el texto es el nombre de una vereda, municipio o departamento, lo dice.
-
-    Sirve para responder con precisión cuando alguien pide MOM de Cundinamarca:
-    no es que el sitio no exista, es que pidió otro nivel geográfico."""
-    v = normalizar(texto)
-    if not v:
-        return ""
-    for props in backend_client.get_geo_ids():
-        for campo in ("departamento", "municipio", "vereda"):
-            if v == normalizar(props.get(campo)):
-                return campo
-    return ""
-
 
 def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
                           fecha: str = "", limite: int = 5) -> dict:
@@ -100,7 +85,7 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
             if uno:
                 encontrados = [uno]
         if not encontrados:
-            nivel = _nivel_geografico(sitio)
+            nivel = nivel_de(sitio)
             if nivel:
                 return {"error": str(sitio) + " es un " + nivel + ", no un sitio.",
                         "sugerencia": ("Esta consulta no admite filtro por vereda, "

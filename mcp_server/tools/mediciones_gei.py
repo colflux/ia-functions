@@ -2,41 +2,11 @@
 guardados, con su unidad, sin promediar ni convertir nada."""
 
 from mcp_server import backend_client
+from mcp_server.geografia import id_de_nivel
 from mcp_server.backend_client import GASES
-from mcp_server.texto import normalizar
 
 NOTA = ("Cada medición trae su propia unidad y un mismo lugar mezcla unidades "
         "distintas. Muestra cada valor con su unidad y no los sumes ni promedies.")
-
-
-def _id_nivel(valor: str, campo: str):
-    """El id del nivel geográfico que pidió la persona.
-
-    Devuelve (id, nombre, error). Los nombres de vereda se repiten entre
-    municipios, así que quedarse con la primera coincidencia daría datos de
-    otro lugar sin avisar: si hay varias, se pide concretar."""
-    v = normalizar(valor)
-    if not v:
-        return None, None, None
-    encontrados: dict = {}
-    for props in backend_client.get_geo_ids():
-        nombre = props.get(campo)
-        if v in normalizar(nombre):
-            encontrados[props.get(campo + "_id")] = nombre
-    if not encontrados:
-        return None, None, {
-            "error": "No encontré " + campo + " " + str(valor),
-            "sugerencia": ("Puede estar escrito de otra forma, o existir sin tener "
-                           "mediciones de ese gas. Usa listar_sitios para verlo."),
-        }
-    if len(encontrados) > 1:
-        return None, None, {
-            "error": "Varias opciones de " + campo + " coinciden con " + str(valor),
-            "candidatos": sorted(set(encontrados.values())),
-            "sugerencia": "Pregunta a la persona cuál de ellas quiere.",
-        }
-    id_nivel, nombre = next(iter(encontrados.items()))
-    return id_nivel, nombre, None
 
 
 def _resumir(filas: list[dict]) -> dict:
@@ -114,7 +84,7 @@ def consultar_mediciones(gas: str = "CO2", sitio: str = "", vereda: str = "",
                 break
         params = {}
         if campo:
-            id_nivel, nombre, err = _id_nivel(valor, campo)
+            id_nivel, nombre, err = id_de_nivel(valor, campo)
             if err:
                 return err
             params[campo] = id_nivel
