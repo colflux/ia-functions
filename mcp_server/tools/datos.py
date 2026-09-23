@@ -141,34 +141,45 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
 
     tope = max(1, min(int(limite or 5), 25))
     objetivos = sitio_ids or [None]
+
+    # Una sola peticion por sitio, con el tope de estadisticas, y de ahi salen tanto
+    # la muestra como los calculos. Antes se pedia dos veces cada sitio: con cinco
+    # registros homonimos eran diez llamadas en lugar de cinco.
     etiquetas: dict = {}
-    filas: list = []
+    por_sitio: list = []
     total = 0
     for sid in objetivos:
-        datos = backend_client.get_datos(proyecto_obj["id"], clave, limite=tope,
-                                         sitio=sid, filtros=filtros)
+        datos = backend_client.get_datos(proyecto_obj["id"], clave,
+                                         limite=LIMITE_ESTADISTICAS, sitio=sid,
+                                         filtros=filtros)
         if not etiquetas:
             etiquetas = {c["clave"]: (c.get("verbose_name") or c.get("campo") or c["clave"])
                          for c in datos.get("columnas", [])}
-        filas.extend({etiquetas.get(k, k): v for k, v in f.items() if v not in (None, "")}
-                     for f in datos.get("filas", []))
+        por_sitio.append([{etiquetas.get(k, k): v for k, v in f.items() if v not in (None, "")}
+                          for f in datos.get("filas", [])])
         total += datos.get("total") or 0
-    filas = filas[:tope]
+
+    # La muestra se reparte por turnos entre los sitios. Truncar la lista concatenada
+    # dejaba las filas de ejemplo casi todas del primero, aunque los totales y las
+    # estadisticas si agregaran a todos.
+    filas: list = []
+    ronda = 0
+    while len(filas) < tope and any(len(g) > ronda for g in por_sitio):
+        for g in por_sitio:
+            if ronda < len(g) and len(filas) < tope:
+                filas.append(g[ronda])
+        ronda += 1
 
     estadisticas = {}
     nota = ""
     if 0 < total <= LIMITE_ESTADISTICAS:
-        todas = []
-        for sid in objetivos:
-            completo = backend_client.get_datos(proyecto_obj["id"], clave,
-                                                limite=LIMITE_ESTADISTICAS, sitio=sid,
-                                                filtros=filtros)
-            todas.extend({etiquetas.get(k, k): v for k, v in f.items() if v not in (None, "")}
-                         for f in completo.get("filas", []))
-        estadisticas = _estadisticas(todas)
-        nota = f"Promedios, minimos y maximos ya calculados sobre los {total} registros que cumplen el filtro. Usalos tal cual: no los recalcules a partir de las filas de ejemplo."
+        estadisticas = _estadisticas([f for g in por_sitio for f in g])
+        nota = ("Promedios, mínimos y máximos ya calculados sobre los " + str(total) +
+                " registros que cumplen el filtro. Úsalos tal cual: no los recalcules "
+                "a partir de las filas de ejemplo.")
     elif total > LIMITE_ESTADISTICAS:
-        nota = f"Hay {total} registros, demasiados para resumirlos aqui. Acota por sitio o por fecha si necesitas promedios."
+        nota = ("Hay " + str(total) + " registros, demasiados para resumirlos aquí. "
+                "Acota por sitio o por fecha si necesitas promedios.")
 
     return {
         "tipo": clave,
