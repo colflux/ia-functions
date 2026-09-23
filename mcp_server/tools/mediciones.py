@@ -6,8 +6,8 @@ este endpoint: se consultan con consultar_datos_campo (tools/datos.py)."""
 
 from mcp_server import backend_client
 from mcp_server.backend_client import GASES
+from mcp_server.catalogo import CATEGORIAS
 
-CATEGORIAS = ("flujos", "biomasa", "cos", "produccion")
 
 NOTA_SIN_UNIDAD = (
     "El backend no declara unidad porque el grupo mezcla varias. "
@@ -38,12 +38,7 @@ def _preparar(variable: str, categoria: str) -> tuple[str | None, str, dict | No
     if cat not in CATEGORIAS:
         return None, "", {
             "error": "Categoría no reconocida.",
-            "categorias_validas": {
-                "flujos": "flujos de gases de efecto invernadero",
-                "biomasa": "carbono almacenado en biomasa",
-                "cos": "carbono orgánico del suelo",
-                "produccion": "producción de biomasa en gramos",
-            },
+            "categorias_validas": CATEGORIAS,
         }
     if cat != "flujos":
         return None, cat, None

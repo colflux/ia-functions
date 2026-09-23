@@ -7,13 +7,8 @@ consultan con consultar_promedio, que los devuelve ya resumidos."""
 import re
 
 from mcp_server import backend_client
+from mcp_server.catalogo import VISTAS
 from mcp_server.texto import normalizar
-
-DESCRIPCIONES = {
-    "mom": "materia orgánica muerta: hojarasca y restos vegetales",
-    "clima": "variables ambientales medidas junto a los flujos: temperatura del suelo y del aire, presión atmosférica, humedad relativa, punto de rocío y nivel de agua",
-}
-
 
 def _clave_fecha(datos: dict) -> str:
     """La clave Modelo.campo de la columna de fecha de la vista, si la hay. Se
@@ -74,8 +69,8 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
     ni filtro por vereda, municipio o departamento. Úsala cuando pregunten por
     hojarasca, restos vegetales o condiciones ambientales."""
     clave = (tipo or "").strip().lower()
-    if clave not in DESCRIPCIONES:
-        return {"error": "Tipo no reconocido.", "tipos_validos": DESCRIPCIONES}
+    if clave not in VISTAS:
+        return {"error": "Tipo no reconocido.", "tipos_validos": VISTAS}
 
     nombre_proyecto = str(proyecto or "").strip()
     if not nombre_proyecto:
@@ -85,7 +80,7 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
             if total:
                 resumen.append({"proyecto": p["nombre"], "registros": total})
         if len(resumen) != 1:
-            return {"tipo": clave, "descripcion": DESCRIPCIONES[clave],
+            return {"tipo": clave, "descripcion": VISTAS[clave],
                     "por_proyecto": resumen,
                     "siguiente_paso": "Indica el proyecto para acotar por sitio o por fecha."}
         # Con un solo proyecto con datos, preguntar cual sobra: se usa ese y se
@@ -183,7 +178,7 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
 
     return {
         "tipo": clave,
-        "descripcion": DESCRIPCIONES[clave],
+        "descripcion": VISTAS[clave],
         "proyecto": proyecto_obj["nombre"],
         "sitio": descripcion_sitio,
         "fecha": texto_fecha or "todas las fechas",
