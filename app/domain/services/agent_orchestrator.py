@@ -170,6 +170,18 @@ class AgentOrchestrator:
             self._conversations.save_turn(external_user_id, "confirmo", answer, [], None)
             return {"answer": answer, "sources": [], "tools_used": [], "pending_confirmation": None}
 
+        if pending.tool_name not in {t.name for t in self._tools.list_tools()}:
+            # Las herramientas de escritura no se registran mientras el backend no
+            # exponga sus endpoints, así que una propuesta guardada antes de eso no
+            # se puede completar. Sin esto, el registro devolvía su error interno
+            # y el usuario lo leía como si fuera la respuesta.
+            answer = ("Esa propuesta necesita una herramienta de escritura que todavía "
+                      "no está disponible, porque el backend no expone sus endpoints. "
+                      "No se guardó nada.")
+            self._conversations.resolve_pending(pending.id)
+            self._conversations.save_turn(external_user_id, "confirmo", answer, [], None)
+            return {"answer": answer, "sources": [], "tools_used": [], "pending_confirmation": None}
+
         result = self._tools.call_tool(pending.tool_name, pending.arguments)
         self._conversations.resolve_pending(pending.id)
 
