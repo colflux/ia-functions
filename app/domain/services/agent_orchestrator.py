@@ -106,12 +106,14 @@ class AgentOrchestrator:
         todas = self._tools.list_tools()
         visibles = self._router.elegir(text, todas) if self._router else todas
 
-        for _ in range(MAX_TURNS):
-            # Las herramientas se declaran en TODAS las vueltas. Quitarlas tras
-            # la primera ahorraba 680 tokens, pero con el historial lleno de
-            # llamadas el modelo imitaba el protocolo en texto plano e inventaba
-            # resultados en vez de redactar. No compensa.
-            declaradas = visibles
+        for vuelta in range(MAX_TURNS):
+            # La primera vuelta va con la seleccion del enrutador, que es donde esta
+            # el ahorro. Si hace falta una segunda, la pregunta ya demostro que
+            # necesita varios pasos: ahi importa mas no dejar al modelo sin la
+            # herramienta que le falta que ahorrar tokens. Quitarlas del todo se
+            # probo y se descarto: con el historial lleno de llamadas el modelo
+            # imitaba el protocolo en texto plano e inventaba resultados.
+            declaradas = visibles if vuelta == 0 else todas
             reply = self._llm.converse(messages, declaradas, SYSTEM_PROMPT)
             if not reply.tool_calls:
                 break
