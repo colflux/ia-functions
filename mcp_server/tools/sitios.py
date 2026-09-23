@@ -25,12 +25,12 @@ def _acotar(sitios: list[dict], campo: str, valor: str) -> list[dict]:
 
 def listar_sitios(departamento: str = "", municipio: str = "", vereda: str = "",
                   filtro: str = "", limite: int = 10,
-                  latitud: float = 0.0, longitud: float = 0.0) -> dict:
+                  latitud: float | None = None, longitud: float | None = None) -> dict:
     """Sitios de monitoreo por niveles: sin argumentos da los departamentos con su
     recuento; con departamento da municipios; con municipio da veredas; con vereda
     da los sitios. filtro busca por nombre, vereda, municipio o id y salta directo
     a los sitios. latitud y longitud dan los más cercanos a un punto."""
-    if latitud and longitud:
+    if latitud is not None and longitud is not None:
         cercanos = backend_client.sitios_cerca(latitud, longitud, max(1, min(int(limite or 5), 20)))
         if not cercanos:
             return {"sin_resultados": True, "mensaje": "Ningún sitio tiene coordenadas."}

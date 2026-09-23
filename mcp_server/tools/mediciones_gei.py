@@ -63,7 +63,7 @@ def _resumir(filas: list[dict]) -> dict:
 def consultar_mediciones(gas: str = "CO2", sitio: str = "", vereda: str = "",
                          municipio: str = "", departamento: str = "",
                          desde: str = "", hasta: str = "", limite: int = 10,
-                         latitud: float = 0.0, longitud: float = 0.0) -> dict:
+                         latitud: float | None = None, longitud: float | None = None) -> dict:
     """Mediciones individuales de un gas (CO2, CH4, N2O) tal como están guardadas:
     fecha, valor, unidad y sitio. Acota por sitio (nombre o id), vereda, municipio,
     departamento y fechas AAAA-MM-DD. Con latitud y longitud usa los sitios mas
@@ -74,7 +74,7 @@ def consultar_mediciones(gas: str = "CO2", sitio: str = "", vereda: str = "",
     tope = max(1, min(int(limite or 10), 30))
     filas: list[dict] = []
     ambito = "todos los sitios"
-    if latitud and longitud:
+    if latitud is not None and longitud is not None:
         # Varios registros de Sitio comparten ubicacion (son series de medicion
         # distintas del mismo lugar), asi que se toman todos los que caen a menos
         # de medio kilometro del mas cercano, no solo el primero.
