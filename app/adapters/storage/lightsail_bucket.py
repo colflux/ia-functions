@@ -42,7 +42,7 @@ class LightsailBucket(FileStorage):
                 return None
             raise
 
-    def enlace_descarga(self, clave: str, nombre: str, segundos: int) -> str | None:
+    def enlace_descarga(self, clave: str, nombre: str, segundos: int, en_linea: bool = False) -> str | None:
         if not self.existe(clave):
             return None
         return self._cliente.generate_presigned_url(
@@ -50,7 +50,7 @@ class LightsailBucket(FileStorage):
             Params={
                 "Bucket": self._nombre,
                 "Key": clave,
-                "ResponseContentDisposition": f'attachment; filename="{nombre}"',
+                "ResponseContentDisposition": f'{"inline" if en_linea else "attachment"}; filename="{nombre}"',
             },
             ExpiresIn=segundos,
         )

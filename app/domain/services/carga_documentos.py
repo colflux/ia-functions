@@ -256,6 +256,22 @@ class CargaDocumentos:
             raise ErrorDeCarga(404, "Ese archivo ya no está disponible.")
         return enlace
 
+    def enlace_imagen(self, clave: str) -> str:
+        """Enlace temporal para mostrar una imagen subida dentro del chat. Las
+        imágenes las puede ver cualquiera; descargar originales sigue pidiendo nivel."""
+        if self._almacen is None:
+            raise ErrorDeCarga(503, "Las imágenes no están disponibles en este momento.")
+        if not (es_archivo_subido(clave) and clave.startswith(f"{PREFIJO_DOCUMENTOS}imagen/")):
+            raise ErrorDeCarga(404, "Esa imagen no existe.")
+        try:
+            enlace = self._almacen.enlace_descarga(clave, nombre_visible(clave), SEGUNDOS_ENLACE, en_linea=True)
+        except Exception:
+            logger.exception("CARGA no se pudo generar el enlace de la imagen %s", clave)
+            raise ErrorDeCarga(502, "No se pudo mostrar la imagen. Intenta de nuevo más tarde.")
+        if enlace is None:
+            raise ErrorDeCarga(404, "Esa imagen ya no está disponible.")
+        return enlace
+
     def _ya_subido(self, huella: str) -> str | None:
         """Qué se guardó con este mismo contenido, o None si es nuevo. Si el
         archivo se borró del bucket (por ejemplo desde la consola), la huella ya

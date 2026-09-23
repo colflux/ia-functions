@@ -18,8 +18,9 @@ class FileStorage(ABC):
         raise NotImplementedError
 
     @abstractmethod
-    def enlace_descarga(self, clave: str, nombre: str, segundos: int) -> str | None:
-        """Enlace temporal para descargar `clave` con el nombre `nombre`, o None si no existe."""
+    def enlace_descarga(self, clave: str, nombre: str, segundos: int, en_linea: bool = False) -> str | None:
+        """Enlace temporal a `clave`, o None si no existe. Con en_linea=False el
+        navegador lo descarga con el nombre `nombre`; con True lo muestra (imágenes)."""
         raise NotImplementedError
 
     @abstractmethod

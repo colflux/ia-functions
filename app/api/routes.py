@@ -70,6 +70,16 @@ def descargar_documento(archivo: str, authorization: str | None = Header(default
         raise HTTPException(status_code=exc.estado, detail=exc.mensaje)
 
 
+@router.get("/documentos/imagen")
+def ver_imagen(archivo: str) -> dict:
+    """Enlace temporal (1 hora) para mostrar en el chat una imagen subida.
+    Abierto a cualquiera: las imágenes son contenido que la plataforma muestra."""
+    try:
+        return {"url": get_carga_documentos().enlace_imagen(archivo)}
+    except ErrorDeCarga as exc:
+        raise HTTPException(status_code=exc.estado, detail=exc.mensaje)
+
+
 @router.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest) -> ChatResponse:
     result = get_orchestrator().respond(payload.message, payload.usuario)
