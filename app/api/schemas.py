@@ -19,6 +19,8 @@ class CargaResponse(BaseModel):
     tipo: str | None = None
     fragmentos: int = 0
     archivo: str | None = None
+    pendiente: bool = False
+    faltantes: list[str] = []
 
 
 class ChatRequest(BaseModel):

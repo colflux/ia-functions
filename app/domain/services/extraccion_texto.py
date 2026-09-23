@@ -31,7 +31,8 @@ def extraer_texto(nombre: str, contenido: bytes) -> str:
         return _decodificar(contenido)
     raise FormatoNoSoportado(
         f"No se pueden leer archivos {extension or 'sin extensión'}. "
-        "Formatos aceptados: PDF, Word (.docx), Excel (.xlsx), CSV y texto (.txt)."
+        "Formatos aceptados: PDF, Word (.docx), Excel (.xlsx), CSV, texto (.txt) "
+        "e imágenes (JPG, PNG o WebP)."
     )
 
 

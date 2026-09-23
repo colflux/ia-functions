@@ -41,6 +41,10 @@ class Settings(BaseSettings):
     bucket_secret_access_key: str = ""
     max_upload_mb: int = 25
 
+    # Modelo con visión que revisa las imágenes subidas (Gemini, con
+    # gemini_api_key). Sin clave, la subida de imágenes no está disponible.
+    image_model: str = "gemini-3.5-flash-lite"
+
     class Config:
         env_file = ".env"
 

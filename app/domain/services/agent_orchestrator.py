@@ -9,10 +9,11 @@ la clave de resultado es consistente entre el orquestador y quien la
 consume, y el schema de argumentos de cada tool sí llega completo al
 modelo."""
 
+import json
 import logging
 import re
 
-from app.domain.models import Message, PendingConfirmation
+from app.domain.models import Message, PendingConfirmation, ToolCall
 from app.domain.ports.conversation_repository import ConversationRepository
 from app.domain.ports.llm_provider import LLMProvider
 from app.domain.services.bienvenida import respuesta_fija
@@ -40,7 +41,21 @@ SYSTEM_PROMPT = (
     "que no está declarada. "
     "No calcules promedios, sumas ni totales por tu cuenta sobre filas parciales: di "
     "cuántos registros hay en total y aclara que lo mostrado es una muestra. "
-    "Cuando cites un dato, menciona su fuente."
+    "Cuando cites un dato, menciona su fuente. "
+    "No inventes secciones, menús, botones, niveles de acceso ni funciones de la "
+    "plataforma: si algo no sale de tus herramientas o documentos, di que no tienes "
+    "esa información. "
+    "Los archivos que las personas suben desde el chat se consultan con "
+    "consultar_archivos_subidos, también cuando piden descargarlos. Si las mediciones "
+    "de la plataforma no tienen el dato, revisa esos archivos antes de decir que no "
+    "hay; si el dato sale de ahí, dilo y aclara que no ha pasado por la validación "
+    "del ETL. "
+    "Sé puntual: responde primero y directo lo que se preguntó, en pocas frases "
+    "(unas 120 palabras como máximo) salvo que pidan más detalle. No uses tablas ni "
+    "marcas de cita, y no agregues conteos ni valores de ejemplo que no se pidieron. "
+    "No afirmes relaciones que los datos no muestran: si algo no se puede comprobar "
+    "con los datos, dilo en una frase. Las interpretaciones de expresiones de campo "
+    "salen del diccionario; si una no está, dilo."
 )
 
 
@@ -59,6 +74,23 @@ def _acotar_historial(mensajes: list[Message], tope: int) -> list[Message]:
         acumulado += largo
         recortado.append(m)
     return list(reversed(recortado))
+
+
+def _sin_tablas_ni_citas(texto: str) -> str:
+    """Red de seguridad por si el modelo no sigue las reglas de forma: quita las
+    marcas de cita (【source: …】) y convierte cada fila de una tabla en una línea
+    de texto; el chat muestra texto plano y una tabla se ve como un muro de barras."""
+    texto = re.sub(r"【[^】]*】", "", texto)
+    lineas = []
+    for linea in texto.splitlines():
+        celdas = linea.strip()
+        if celdas.startswith("|") and celdas.endswith("|"):
+            if re.fullmatch(r"\|[\s:|-]+\|", celdas):
+                continue  # separador |---|---|
+            lineas.append(" — ".join(c.strip() for c in celdas.strip("|").split("|") if c.strip()))
+        else:
+            lineas.append(linea)
+    return re.sub(r"[ \t]+([.,;:])", r"\1", "\n".join(lineas)).strip()
 
 
 def _texto_plano(texto: str) -> str:
@@ -119,10 +151,14 @@ class AgentOrchestrator:
                 break
 
             messages.append(Message(role="assistant", text=reply.text, tool_calls=reply.tool_calls))
+            encadenadas: list[dict] = []
             for call in reply.tool_calls:
                 tools_used.append(call.name)
                 result = self._tools.call_tool(call.name, call.arguments)
                 logger.info("HERRAMIENTA %s | args=%s | resultado=%s", call.name, call.arguments, str(result)[:400])
+                encadenada = result.pop("consultar_tambien", None)
+                if encadenada:
+                    encadenadas.append(encadenada)
 
                 result_sources = result.pop("sources", None)
                 if result_sources:
@@ -140,17 +176,17 @@ class AgentOrchestrator:
                         tool_result=result,
                     )
                 )
+            self._encadenar(encadenadas, {t.name for t in todas}, messages, tools_used, sources)
 
         respaldo = (
-            "Encontré el significado en el diccionario, pero no llegué a consultar las "
-            "mediciones. Pregúntame por partes: primero qué significa y después los "
-            "datos de un sitio concreto."
+            "Encontré información relacionada, pero no alcancé a armar la respuesta. "
+            "Pregúntamelo de nuevo de forma más concreta, o por partes."
             if sources else
             "No pude completar la consulta con las herramientas disponibles. "
             "Intenta reformular la pregunta o indicar el sitio por su nombre o número."
         )
         answer = (reply.text if reply else "") or respaldo
-        answer = _texto_plano(answer)
+        answer = _sin_tablas_ni_citas(_texto_plano(answer))
         unique_sources = self._dedupe_sources(sources)
 
         if pending:
@@ -190,6 +226,30 @@ class AgentOrchestrator:
         answer = result.get("mensaje") or result.get("error", "Listo.")
         self._conversations.save_turn(external_user_id, "confirmo", answer, [pending.tool_name], None)
         return {"answer": answer, "sources": [], "tools_used": [pending.tool_name], "pending_confirmation": None}
+
+    def _encadenar(self, encadenadas: list[dict], disponibles: set[str], messages: list[Message],
+                   tools_used: list[str], sources: list[dict]) -> None:
+        """Consultas que una herramienta pide hacer además de la suya (clave
+        "consultar_tambien"). Se ejecutan de una vez, sin esperar a que el modelo
+        lo decida: así un "no hay mediciones en la plataforma" llega junto con lo
+        que haya en los archivos subidos, y el modelo no puede responder que no
+        hay datos sin haber mirado (probado: con solo la indicación, le decía a
+        la persona que usara la herramienta en vez de usarla)."""
+        hechas: set[tuple[str, str]] = set()
+        for pedido in encadenadas:
+            nombre = pedido.get("herramienta")
+            argumentos = pedido.get("argumentos") or {}
+            clave = (nombre, json.dumps(argumentos, sort_keys=True))
+            if nombre not in disponibles or clave in hechas:
+                continue
+            hechas.add(clave)
+            llamada = ToolCall(name=nombre, arguments=argumentos)
+            resultado = self._tools.call_tool(nombre, argumentos)
+            logger.info("ENCADENADA %s | args=%s | resultado=%s", nombre, argumentos, str(resultado)[:400])
+            tools_used.append(nombre)
+            sources.extend(resultado.pop("sources", None) or [])
+            messages.append(Message(role="assistant", text="", tool_calls=[llamada]))
+            messages.append(Message(role="tool", tool_call_id=llamada.id, tool_name=nombre, tool_result=resultado))
 
     @staticmethod
     def _dedupe_sources(sources: list[dict]) -> list[dict]:

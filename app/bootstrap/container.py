@@ -4,6 +4,8 @@ concretas y decide, según config.py, cuál usar detrás de cada puerto."""
 import sys
 from functools import lru_cache
 
+from app.adapters.auth.backend_user_directory import BackendUserDirectory
+from app.adapters.backend.data_model import BackendDataModel
 from app.adapters.embeddings.sentence_transformers_provider import SentenceTransformersProvider
 from app.adapters.llm.anthropic import AnthropicProvider
 from app.adapters.llm.cerebras import CerebrasProvider
@@ -11,18 +13,20 @@ from app.adapters.llm.gemini import GeminiProvider
 from app.adapters.llm.groq import GroqProvider
 from app.adapters.llm.ollama import OllamaProvider
 from app.adapters.persistence.postgres_conversation_repo import PostgresConversationRepository
+from app.adapters.storage.lightsail_bucket import LightsailBucket
+from app.adapters.tools.archivos_subidos_tool_provider import ArchivosSubidosToolProvider
 from app.adapters.tools.mcp_tool_provider import McpToolProvider
 from app.adapters.tools.rag_tool_provider import RagToolProvider
 from app.adapters.vectorstore.pgvector_store import PgVectorStore
+from app.adapters.vision.gemini_vision import GeminiVision
 from app.config import parsed_mcp_servers, settings
 from app.domain.ports.llm_provider import LLMProvider
 from app.domain.services.agent_orchestrator import AgentOrchestrator
+from app.domain.services.carga_documentos import CargaDocumentos
 from app.domain.services.rag_service import RagService
 from app.domain.services.tool_registry import ToolRegistry
 from app.domain.services.tool_router import ToolRouter
-from app.adapters.auth.backend_user_directory import BackendUserDirectory
-from app.adapters.storage.lightsail_bucket import LightsailBucket
-from app.domain.services.carga_documentos import CargaDocumentos
+from app.domain.services.validacion_datos import ValidadorDatos
 
 
 @lru_cache
@@ -59,6 +63,7 @@ def get_rag_service() -> RagService:
 def get_tool_registry() -> ToolRegistry:
     providers = [
         RagToolProvider(get_rag_service(), settings.retrieval_top_k, settings.retrieval_min_score),
+        ArchivosSubidosToolProvider(PgVectorStore()),
     ]
     for name, url in parsed_mcp_servers().items():
         try:
@@ -98,5 +103,10 @@ def get_carga_documentos() -> CargaDocumentos:
         almacen=almacen,
         llm=get_llm_provider(),
         rag=get_rag_service(),
+        validador=ValidadorDatos(get_llm_provider(), BackendDataModel(settings.backend_api_base_url)),
+        revisor_imagenes=(
+            GeminiVision(settings.gemini_api_key, settings.image_model)
+            if settings.gemini_api_key else None
+        ),
         max_bytes=settings.max_upload_mb * 1024 * 1024,
     )

@@ -1,4 +1,5 @@
 import boto3
+from botocore.exceptions import ClientError
 
 from app.domain.ports.file_storage import FileStorage
 
@@ -22,6 +23,36 @@ class LightsailBucket(FileStorage):
             Body=contenido,
             ContentType=tipo_contenido,
             Metadata=metadatos,
+        )
+
+    def existe(self, clave: str) -> bool:
+        try:
+            self._cliente.head_object(Bucket=self._nombre, Key=clave)
+            return True
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404", "NotFound"):
+                return False
+            raise
+
+    def leer(self, clave: str) -> bytes | None:
+        try:
+            return self._cliente.get_object(Bucket=self._nombre, Key=clave)["Body"].read()
+        except ClientError as exc:
+            if exc.response.get("Error", {}).get("Code") in ("NoSuchKey", "404"):
+                return None
+            raise
+
+    def enlace_descarga(self, clave: str, nombre: str, segundos: int) -> str | None:
+        if not self.existe(clave):
+            return None
+        return self._cliente.generate_presigned_url(
+            "get_object",
+            Params={
+                "Bucket": self._nombre,
+                "Key": clave,
+                "ResponseContentDisposition": f'attachment; filename="{nombre}"',
+            },
+            ExpiresIn=segundos,
         )
 
     def borrar(self, clave: str) -> None:

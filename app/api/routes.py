@@ -1,6 +1,6 @@
 from dataclasses import asdict
 
-from fastapi import APIRouter, File, Header, HTTPException, UploadFile
+from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 
 from app.api.schemas import (
     CargaResponse, ChatRequest, ChatResponse, HistorialResponse, IngestRequest, IngestResponse,
@@ -9,9 +9,16 @@ from app.bootstrap.container import (
     get_carga_documentos, get_conversation_repository, get_orchestrator, get_rag_service,
 )
 from app.domain.services.agent_orchestrator import HISTORY_MINUTES
+from app.domain.services.bienvenida import BIENVENIDA
 from app.domain.services.carga_documentos import ErrorDeCarga
 
 router = APIRouter()
+
+
+@router.get("/bienvenida")
+def bienvenida() -> dict:
+    """Presentación que el chat muestra al abrirse."""
+    return {"texto": BIENVENIDA}
 
 
 @router.post("/ingest", response_model=IngestResponse)
@@ -23,18 +30,44 @@ def ingest(payload: IngestRequest) -> IngestResponse:
 @router.post("/documentos", response_model=CargaResponse)
 def subir_documento(
     archivo: UploadFile = File(...),
+    descripcion: str = Form(default=""),
+    complementos: str = Form(default=""),
     authorization: str | None = Header(default=None),
 ) -> CargaResponse:
     """Sube un archivo desde el chat. Exige sesión con nivel reportador; el
-    modelo revisa el contenido y solo se guarda si tiene relación con COLFLUX."""
+    modelo revisa el contenido y solo se guarda si tiene relación con COLFLUX y
+    coincide con la `descripcion` que dio la persona antes de elegirlo.
+    Si es un archivo de datos y le faltan campos obligatorios, responde
+    `pendiente` con lo que falta; el chat reenvía el archivo con las
+    respuestas de la persona en `complementos` (una por línea)."""
     carga = get_carga_documentos()
     try:
         usuario = carga.verificar_permiso(authorization)
         contenido = archivo.file.read(carga.max_bytes + 1)
-        resultado = carga.subir(usuario, archivo.filename or "archivo", contenido, archivo.content_type)
+        resultado = carga.subir(
+            usuario,
+            authorization,
+            archivo.filename or "archivo",
+            contenido,
+            archivo.content_type,
+            descripcion,
+            [linea.strip() for linea in complementos.splitlines() if linea.strip()],
+        )
     except ErrorDeCarga as exc:
         raise HTTPException(status_code=exc.estado, detail=exc.mensaje)
     return CargaResponse(**asdict(resultado))
+
+
+@router.get("/documentos/descargar")
+def descargar_documento(archivo: str, authorization: str | None = Header(default=None)) -> dict:
+    """Enlace temporal (1 hora) al original de un archivo subido. Solo para
+    reportadores y administradores: el nivel se verifica con el backend."""
+    carga = get_carga_documentos()
+    try:
+        carga.verificar_permiso(authorization)
+        return {"url": carga.enlace_descarga(archivo)}
+    except ErrorDeCarga as exc:
+        raise HTTPException(status_code=exc.estado, detail=exc.mensaje)
 
 
 @router.post("/chat", response_model=ChatResponse)
