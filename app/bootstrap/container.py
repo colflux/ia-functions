@@ -20,6 +20,9 @@ from app.domain.services.agent_orchestrator import AgentOrchestrator
 from app.domain.services.rag_service import RagService
 from app.domain.services.tool_registry import ToolRegistry
 from app.domain.services.tool_router import ToolRouter
+from app.adapters.auth.backend_user_directory import BackendUserDirectory
+from app.adapters.storage.lightsail_bucket import LightsailBucket
+from app.domain.services.carga_documentos import CargaDocumentos
 
 
 @lru_cache
@@ -78,3 +81,22 @@ def get_orchestrator() -> AgentOrchestrator:
     return AgentOrchestrator(get_llm_provider(), get_tool_registry(),
                              get_conversation_repository(),
                              ToolRouter(get_embedding_provider()))
+
+
+@lru_cache
+def get_carga_documentos() -> CargaDocumentos:
+    almacen = None
+    if settings.bucket_name:
+        almacen = LightsailBucket(
+            settings.bucket_name,
+            settings.bucket_region,
+            settings.bucket_access_key_id,
+            settings.bucket_secret_access_key,
+        )
+    return CargaDocumentos(
+        usuarios=BackendUserDirectory(settings.backend_api_base_url),
+        almacen=almacen,
+        llm=get_llm_provider(),
+        rag=get_rag_service(),
+        max_bytes=settings.max_upload_mb * 1024 * 1024,
+    )

@@ -30,6 +30,17 @@ class Settings(BaseSettings):
     # agente corre solo con las tools locales de RAG.
     mcp_servers: str = ""
 
+    # Backend de COLFLUX: lo usa la subida de archivos para verificar la sesión.
+    backend_api_base_url: str = "http://host.docker.internal:8000"
+
+    # Bucket donde se guardan los archivos subidos. Sin nombre, la subida
+    # responde que no está disponible.
+    bucket_name: str = ""
+    bucket_region: str = "us-east-1"
+    bucket_access_key_id: str = ""
+    bucket_secret_access_key: str = ""
+    max_upload_mb: int = 25
+
     class Config:
         env_file = ".env"
 

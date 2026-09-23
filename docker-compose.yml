@@ -9,6 +9,9 @@ services:
       - "127.0.0.1:${WEB_PORT:-8001}:8000"
     env_file:
       - .env
+    extra_hosts:
+      # La subida de archivos verifica la sesión del usuario contra el backend.
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy
