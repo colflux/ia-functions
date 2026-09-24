@@ -1,99 +1,41 @@
+"""Gemini por su API compatible con OpenAI, con el mismo adaptador que Groq y
+Cerebras. Reemplaza al adaptador anterior sobre google-genai, que apuntaba a
+gemini-1.5-flash (retirado) y no manejaba cuotas.
+
+Los modelos Gemini 3 exigen que cada llamada a herramienta que vuelve en el
+historial traiga la «firma de pensamiento» con la que Gemini la generó; sin
+ella responden 400. Las llamadas propias se reenvían con su firma real. Las que
+hizo otro proveedor (Gemini entra como respaldo a mitad de una pregunta) o el
+orquestador (diccionario anticipado) no tienen firma: van con el valor que
+Google documenta para historiales que vienen de otro modelo."""
+
+from collections import OrderedDict
+
+from app.adapters.llm.openai_compatible import OpenAICompatibleProvider
 from app.config import settings
-from app.domain.models import Message, ModelReply, ToolCall, ToolSpec
-from app.domain.ports.llm_provider import LLMProvider
 
-_JSON_SCHEMA_TYPES = {
-    "object": "OBJECT",
-    "string": "STRING",
-    "number": "NUMBER",
-    "integer": "INTEGER",
-    "boolean": "BOOLEAN",
-    "array": "ARRAY",
-}
+BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
+FIRMA_AJENA = "skip_thought_signature_validator"
+MAX_FIRMAS = 500
 
 
-class GeminiProvider(LLMProvider):
+class GeminiProvider(OpenAICompatibleProvider):
     def __init__(self) -> None:
-        self._api_key = settings.gemini_api_key
-        self._model = settings.gemini_model
+        super().__init__(settings.gemini_api_key, BASE_URL, settings.gemini_model, "gemini")
+        self._firmas: OrderedDict[str, str] = OrderedDict()
 
-    def _client(self):
-        from google import genai
+    def _recibido(self, message) -> None:
+        for tc in message.tool_calls or []:
+            extra = (getattr(tc, "model_extra", None) or {}).get("extra_content") or {}
+            firma = (extra.get("google") or {}).get("thought_signature")
+            if firma:
+                self._firmas[tc.id] = firma
+                while len(self._firmas) > MAX_FIRMAS:
+                    self._firmas.popitem(last=False)
 
-        return genai.Client(api_key=self._api_key)
-
-    def _to_schema(self, spec: dict):
-        from google.genai import types
-
-        kwargs = {"type": _JSON_SCHEMA_TYPES.get(spec.get("type", "string"), "STRING")}
-        if spec.get("description"):
-            kwargs["description"] = spec["description"]
-        if spec.get("enum"):
-            kwargs["enum"] = list(spec["enum"])
-        if spec.get("properties"):
-            kwargs["properties"] = {k: self._to_schema(v) for k, v in spec["properties"].items()}
-        if spec.get("required"):
-            kwargs["required"] = list(spec["required"])
-        if spec.get("items"):
-            kwargs["items"] = self._to_schema(spec["items"])
-        return types.Schema(**kwargs)
-
-    def _to_contents(self, messages: list[Message]):
-        from google.genai import types
-
-        contents = []
-        for m in messages:
-            if m.role == "user":
-                contents.append(types.Content(role="user", parts=[types.Part(text=m.text)]))
-            elif m.role == "assistant":
-                parts = []
-                if m.text:
-                    parts.append(types.Part(text=m.text))
-                for tc in m.tool_calls:
-                    parts.append(types.Part(function_call=types.FunctionCall(name=tc.name, args=tc.arguments)))
-                if parts:
-                    contents.append(types.Content(role="model", parts=parts))
-            elif m.role == "tool":
-                contents.append(
-                    types.Content(
-                        role="user",
-                        parts=[
-                            types.Part.from_function_response(
-                                name=m.tool_name, response={"result": m.tool_result}
-                            )
-                        ],
-                    )
-                )
-        return contents
-
-    def converse(
-        self,
-        messages: list[Message],
-        tools: list[ToolSpec],
-        system: str | None = None,
-    ) -> ModelReply:
-        from google.genai import types
-
-        declarations = [
-            types.FunctionDeclaration(
-                name=t.name, description=t.description, parameters=self._to_schema(t.parameters)
-            )
-            for t in tools
-        ]
-        config = types.GenerateContentConfig(
-            system_instruction=system,
-            tools=[types.Tool(function_declarations=declarations)] if declarations else None,
-            automatic_function_calling=types.AutomaticFunctionCallingConfig(disable=True),
-        )
-
-        response = self._client().models.generate_content(
-            model=self._model,
-            contents=self._to_contents(messages),
-            config=config,
-        )
-
-        tool_calls = [
-            ToolCall(name=fc.name, arguments=dict(fc.args or {}))
-            for fc in (response.function_calls or [])
-        ]
-        return ModelReply(text=(response.text or "").strip(), tool_calls=tool_calls)
+    def _preparar(self, msgs: list[dict]) -> list[dict]:
+        for m in msgs:
+            for tc in m.get("tool_calls") or []:
+                firma = self._firmas.get(tc["id"], FIRMA_AJENA)
+                tc["extra_content"] = {"google": {"thought_signature": firma}}
+        return msgs

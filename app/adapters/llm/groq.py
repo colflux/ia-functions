@@ -8,4 +8,4 @@ BASE_URL = "https://api.groq.com/openai/v1"
 
 class GroqProvider(OpenAICompatibleProvider):
     def __init__(self) -> None:
-        super().__init__(settings.groq_api_key, BASE_URL, settings.groq_model)
+        super().__init__(settings.groq_api_key, BASE_URL, settings.groq_model, "groq")
