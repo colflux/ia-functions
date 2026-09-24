@@ -3,6 +3,10 @@ from pydantic_settings import BaseSettings
 
 class Settings(BaseSettings):
     llm_provider: str = "groq"  # groq | cerebras | gemini | ollama | anthropic
+    # Proveedores de respaldo, en orden y separados por comas (por ejemplo
+    # "groq,gemini"): si el principal no puede atender una llamada, se pasa al
+    # siguiente. Los planes gratuitos limitan las peticiones por minuto.
+    llm_respaldo: str = ""
 
     groq_api_key: str = ""
     groq_model: str = "openai/gpt-oss-120b"
@@ -11,7 +15,7 @@ class Settings(BaseSettings):
     cerebras_model: str = "gpt-oss-120b"
 
     gemini_api_key: str = ""
-    gemini_model: str = "gemini-1.5-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"
 
     anthropic_api_key: str = ""
     anthropic_model: str = "claude-sonnet-5"

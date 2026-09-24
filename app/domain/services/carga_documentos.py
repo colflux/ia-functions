@@ -1,6 +1,12 @@
 """Subida de documentos e imágenes desde el chat.
 
-Flujo: verificar con el backend que quien sube tiene nivel reportador →
+Antes del archivo, el chat hace dos preguntas y el asistente revisa cada
+respuesta: qué se va a subir (si no tiene que ver con COLFLUX, no se sigue) y de
+dónde es (lugar obligatorio y verificado, ver lugar.py). Se guarda también la
+ubicación del dispositivo al subir y la que trae la foto en su GPS, cada una con
+su origen.
+
+Flujo del archivo: verificar con el backend que quien sube tiene nivel reportador →
 descartar si ese mismo contenido ya se subió antes → revisar que tenga
 relación con COLFLUX y que coincida con lo que la persona dijo que iba a subir
 (el texto lo revisa el modelo del chat; las imágenes, un modelo con visión) →
@@ -19,6 +25,7 @@ import hashlib
 import json
 import logging
 import re
+import time
 import unicodedata
 import uuid
 from dataclasses import dataclass, field
@@ -27,11 +34,15 @@ from pathlib import Path
 from typing import Any
 
 from app.domain.models import Message
+from app.domain.ports.data_model import DataModelCatalog
 from app.domain.ports.file_storage import FileStorage
 from app.domain.ports.image_reviewer import ImageReviewer
 from app.domain.ports.llm_provider import LLMProvider
+from app.domain.ports.tool_provider import ToolProvider
 from app.domain.ports.user_directory import UserDirectory
 from app.domain.services.extraccion_texto import FormatoNoSoportado, extraer_texto
+from app.domain.services.gps_foto import coordenadas_de_foto
+from app.domain.services.lugar import Lugar, LugarInvalido, interpretar, sitio_mas_cercano
 from app.domain.services.rag_service import RagService
 from app.domain.services.validacion_datos import (
     ETIQUETAS_CATEGORIA, Requisito, ResultadoValidacion, ValidacionFallida, ValidadorDatos,
@@ -49,6 +60,12 @@ PREFIJO_DOCUMENTOS = "documentos/"
 PREFIJO_HUELLAS = "documentos/_huellas/"
 PREFIJO_INFO = "documentos/_info/"   # descripción y datos aportados de cada archivo
 SEGUNDOS_ENLACE = 3600
+MIN_CARACTERES_DESCRIPCION = 15
+SEGUNDOS_CACHE_SITIOS = 600
+PARECIDO_DICCIONARIO_IMAGEN = 0.86  # mismo criterio que la consulta anticipada del chat
+MAX_TERMINOS_IMAGEN = 2
+REINTENTAR = ("Elige otro archivo con 📎, escribe «describir» para contarme de nuevo qué vas a subir, "
+              "o «cancelar».")
 
 IMAGENES = {".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".png": "image/png", ".webp": "image/webp"}
 
@@ -67,6 +84,14 @@ ETIQUETAS = {
     "documento": "documento de consulta",
     "imagen": "imagen",
 }
+
+PROMPT_DESCRIPCION = """COLFLUX es una plataforma científica colombiana sobre flujos de gases de efecto invernadero (CO2, CH4, N2O) en páramos, humedales, sabanas inundables y morichales: mediciones de campo, suelos, biomasa, clima, y el conocimiento de las comunidades de esos territorios.
+
+Alguien va a subir un archivo y lo describe así. Todavía no has visto el archivo: decide solo por la descripción.
+- relacionado: true si lo descrito puede tener que ver con COLFLUX: entrevistas o testimonios de campo, términos o expresiones locales, datos o tablas de mediciones, informes o documentos de esos temas, o imágenes de ecosistemas, plantas, fauna, suelo, agua, muestras, equipos o trabajo de campo. false si describe otra cosa (vehículos, comida, personas sin relación con el campo, documentos de otros temas).
+- motivo: una frase corta en español, dirigida a esa persona. Si es false, di por qué no se puede subir.
+
+Responde SOLO con un objeto JSON: {"relacionado": true, "motivo": "..."}"""
 
 PROMPT_REVISION = """COLFLUX es una plataforma científica colombiana sobre flujos de gases de efecto invernadero (CO2, CH4, N2O) en páramos y humedales de alta montaña: mediciones de campo, suelos (carbono orgánico, materia orgánica), biomasa, clima, y el conocimiento de las comunidades de esos territorios.
 
@@ -100,6 +125,8 @@ class ResultadoCarga:
     archivo: str | None = None
     pendiente: bool = False  # faltan datos obligatorios: se esperan complementos
     faltantes: list[str] = field(default_factory=list)
+    reintentar: bool = False  # el archivo no era el descrito: se puede elegir otro sin repetir los pasos
+    lugar: str | None = None  # lugar interpretado (paso de revisar el lugar)
 
 
 def tiene_nivel(nivel: str | None, minimo: str) -> bool:
@@ -117,6 +144,8 @@ class CargaDocumentos:
         validador: ValidadorDatos,
         revisor_imagenes: ImageReviewer | None,
         max_bytes: int,
+        modelo: DataModelCatalog | None = None,
+        herramientas: ToolProvider | None = None,
     ):
         self._usuarios = usuarios
         self._almacen = almacen
@@ -125,6 +154,9 @@ class CargaDocumentos:
         self._validador = validador
         self._revisor_imagenes = revisor_imagenes
         self.max_bytes = max_bytes
+        self._modelo = modelo
+        self._herramientas = herramientas
+        self._sitios_cache: tuple[float, list[dict[str, Any]]] | None = None
 
     def verificar_permiso(self, autorizacion: str | None) -> dict[str, Any]:
         if self._almacen is None:
@@ -146,6 +178,47 @@ class CargaDocumentos:
             )
         return usuario
 
+    def revisar_descripcion(self, descripcion: str) -> ResultadoCarga:
+        """Primer paso: lo que la persona dice que va a subir. Si no tiene que
+        ver con COLFLUX no se abre el selector de archivo. Si el modelo no puede
+        responder se deja seguir: el archivo se revisa de todas formas."""
+        descripcion = descripcion.strip()
+        if len(descripcion) < MIN_CARACTERES_DESCRIPCION:
+            return ResultadoCarga(False, "Cuéntame un poco más: qué tipo de archivo es y de qué trata.")
+        try:
+            respuesta = self._llm.converse([Message(role="user", text=f"Descripción: {descripcion}")], [],
+                                           system=PROMPT_DESCRIPCION)
+            datos = json.loads(re.search(r"\{.*\}", respuesta.text, re.DOTALL).group(0))
+            relacionado, motivo = datos.get("relacionado"), str(datos.get("motivo", "")).strip()
+        except Exception:
+            logger.warning("CARGA no se pudo revisar la descripción; se deja seguir", exc_info=True)
+            relacionado, motivo = True, ""
+        logger.info("CARGA descripción %r → relacionado=%s", descripcion[:80], relacionado)
+        if relacionado is False:
+            return ResultadoCarga(False, f"Eso no se puede subir a COLFLUX: {motivo} "
+                                         "Si quieres subir otra cosa, descríbela; o escribe «cancelar».")
+        return ResultadoCarga(True, "")
+
+    def revisar_lugar(self, texto: str) -> Lugar:
+        """Segundo paso: de dónde es el archivo. ErrorDeCarga 422 con lo que falta."""
+        try:
+            return interpretar(texto, self._sitios())
+        except LugarInvalido as exc:
+            raise ErrorDeCarga(422, str(exc))
+
+    def _sitios(self) -> list[dict[str, Any]]:
+        if self._modelo is None:
+            return []
+        if self._sitios_cache and time.monotonic() - self._sitios_cache[0] < SEGUNDOS_CACHE_SITIOS:
+            return self._sitios_cache[1]
+        try:
+            sitios = self._modelo.sitios()
+        except Exception:
+            logger.exception("CARGA no se pudieron leer los sitios de la plataforma")
+            return self._sitios_cache[1] if self._sitios_cache else []
+        self._sitios_cache = (time.monotonic(), sitios)
+        return sitios
+
     def subir(
         self,
         usuario: dict[str, Any],
@@ -155,9 +228,12 @@ class CargaDocumentos:
         tipo_contenido: str | None,
         descripcion: str,
         complementos: list[str],
+        lugar_texto: str = "",
+        dispositivo: tuple[float, float, float | None] | None = None,
     ) -> ResultadoCarga:
         if not descripcion.strip():
             raise ErrorDeCarga(422, "Antes de subir el archivo, cuéntame qué es y de qué trata.")
+        lugar = self.revisar_lugar(lugar_texto)
         if len(contenido) > self.max_bytes:
             raise ErrorDeCarga(413, f"El archivo supera el máximo de {self.max_bytes // (1024 * 1024)} MB.")
 
@@ -167,19 +243,23 @@ class CargaDocumentos:
             return ResultadoCarga(False, f"«{nombre}» ya se había subido antes (se guardó como {anterior}). No se guardó de nuevo.")
 
         mime_imagen = IMAGENES.get(Path(nombre).suffix.lower())
+        gps_foto = coordenadas_de_foto(contenido) if mime_imagen else None
+        observaciones: list[str] = []
         if mime_imagen:
-            veredicto, texto = self._revisar_imagen(nombre, contenido, mime_imagen, descripcion)
+            veredicto, texto, observaciones = self._revisar_imagen(nombre, contenido, mime_imagen, descripcion)
         else:
             texto = self._leer(nombre, contenido)
             veredicto = self._revisar(nombre, texto, descripcion)
         logger.info("CARGA usuario=%s archivo=%r veredicto=%s", usuario.get("id"), nombre, veredicto)
         if not veredicto["relacionado"]:
-            return ResultadoCarga(False, f"No se guardó «{nombre}»: {veredicto['motivo']}")
+            return ResultadoCarga(False, f"No se guardó «{nombre}»: {veredicto['motivo']} {REINTENTAR}",
+                                  reintentar=True)
         if not veredicto["coincide"]:
             return ResultadoCarga(
                 False,
                 f"No se guardó «{nombre}»: no coincide con lo que me dijiste que ibas a subir. "
-                f"{veredicto['motivo']} Si es el archivo correcto, vuelve a intentarlo describiéndolo de nuevo.",
+                f"{veredicto['motivo']} {REINTENTAR}",
+                reintentar=True,
             )
 
         tipo = veredicto["tipo"]
@@ -205,7 +285,13 @@ class CargaDocumentos:
         clave = f"{PREFIJO_DOCUMENTOS}{tipo}/{date.today():%Y-%m-%d}-{uuid.uuid4().hex[:8]}-{_nombre_seguro(nombre)}"
         clave_info = f"{PREFIJO_INFO}{clave[len(PREFIJO_DOCUMENTOS):]}.txt"
         metadatos = {"usuario": str(usuario.get("id", "")), "tipo": tipo, "sha256": huella}
-        info = _info(descripcion, complementos)
+        ubicacion = _ubicacion(lugar, dispositivo, gps_foto, self._sitios())
+        relacion = ""
+        if tipo == "imagen":
+            punto = gps_foto or ((lugar.latitud, lugar.longitud) if lugar.latitud is not None else None) \
+                or (dispositivo[:2] if dispositivo else None)
+            relacion = self._relacionar_imagen(observaciones, punto)
+        info = _info(descripcion, complementos, ubicacion + ([relacion] if relacion else []))
         guardadas: list[str] = []
         try:
             self._almacen.subir(clave, contenido, tipo_contenido or mime_imagen or "application/octet-stream", metadatos)
@@ -234,13 +320,15 @@ class CargaDocumentos:
         except Exception:
             logger.exception("CARGA no se pudo registrar la huella de %s", clave)
 
-        return ResultadoCarga(
-            True,
-            f"«{nombre}» se guardó como {etiqueta}. Ya puedes hacerme preguntas sobre su contenido.",
-            tipo,
-            fragmentos,
-            clave,
-        )
+        mensaje = f"«{nombre}» se guardó como {etiqueta}, con el lugar: {lugar.resumen()}."
+        if gps_foto:
+            mensaje += f" La foto trae su ubicación GPS ({gps_foto[0]}, {gps_foto[1]}) y también quedó guardada."
+        if lugar.avisos:
+            mensaje += " " + " ".join(lugar.avisos)
+        if relacion:
+            mensaje += "\n\n" + relacion
+        mensaje += "\n\nYa puedes hacerme preguntas sobre su contenido."
+        return ResultadoCarga(True, mensaje, tipo, fragmentos, clave, lugar=lugar.resumen())
 
     def enlace_descarga(self, clave: str) -> str:
         """Enlace temporal al original de un archivo subido. Quien llama ya
@@ -324,7 +412,8 @@ class CargaDocumentos:
             raise ErrorDeCarga(502, "No se pudo revisar el archivo en este momento. Intenta de nuevo más tarde.")
         return veredicto
 
-    def _revisar_imagen(self, nombre: str, contenido: bytes, mime: str, descripcion: str) -> tuple[dict[str, Any], str]:
+    def _revisar_imagen(self, nombre: str, contenido: bytes, mime: str,
+                        descripcion: str) -> tuple[dict[str, Any], str, list[str]]:
         if self._revisor_imagenes is None:
             raise ErrorDeCarga(503, "La revisión de imágenes no está disponible en este momento.")
         if len(contenido) > MAX_MB_IMAGEN * 1024 * 1024:
@@ -342,7 +431,52 @@ class CargaDocumentos:
             "coincide": revision["coincide"],
             "motivo": revision["motivo"],
         }
-        return veredicto, f"Imagen «{nombre}». Lo que se ve en ella: {revision['descripcion']}"
+        observaciones = revision.get("observaciones") or []
+        texto = f"Imagen «{nombre}». Lo que se ve en ella: {revision['descripcion']}"
+        if observaciones:
+            texto += "\nRasgos visibles: " + "; ".join(observaciones)
+        return veredicto, texto, observaciones
+
+    def _relacionar_imagen(self, observaciones: list[str], punto: tuple[float, float] | None) -> str:
+        """Lo que la imagen permite relacionar con COLFLUX, sin afirmar nada que la
+        foto no pruebe: los términos del diccionario que describen lo que se ve,
+        y las mediciones que ya existen cerca del lugar."""
+        lineas: list[str] = []
+        vistos: set[str] = set()
+        for observacion in observaciones:
+            try:
+                encontrados = self._rag.retrieve(observacion, 1, PARECIDO_DICCIONARIO_IMAGEN, collection="dictionary")
+            except Exception:
+                logger.exception("CARGA no se pudo consultar el diccionario para %r", observacion)
+                continue
+            for f in encontrados:
+                termino = re.sub(r"^diccionario-\d+\s*", "", f.source)
+                if termino in vistos or len(vistos) >= MAX_TERMINOS_IMAGEN:
+                    continue
+                vistos.add(termino)
+                definicion = _campo(f.content, "Definición ecológica") or _campo(f.content, "Interpretación")
+                lineas.append(f"• Se ve «{observacion}». En el diccionario de campo, «{termino}»: {definicion}")
+        if punto and self._herramientas is not None:
+            partes, ambito = [], ""
+            for gas in ("CO2", "CH4"):
+                try:
+                    r = self._herramientas.call_tool("consultar_mediciones",
+                                                     {"gas": gas, "latitud": punto[0], "longitud": punto[1], "limite": 1})
+                except Exception:
+                    logger.exception("CARGA no se pudieron consultar mediciones de %s cerca de %s", gas, punto)
+                    continue
+                if r.get("total_mediciones"):
+                    partes.append(f"{gas}: {r['total_mediciones']} mediciones entre {r.get('desde')} y {r.get('hasta')}")
+                    ambito = ambito or r.get("ambito", "")
+                elif r.get("sin_datos") or r.get("ambito"):
+                    partes.append(f"{gas}: sin mediciones")
+                    ambito = ambito or r.get("ambito", "")
+            if partes:
+                lineas.append(f"• Mediciones que ya hay cerca de ese punto ({ambito or 'el punto indicado'}): " + "; ".join(partes) + ".")
+        if not lineas:
+            return ""
+        return ("Relación con lo que ya hay en COLFLUX:\n" + "\n".join(lineas)
+                + "\nEs una referencia: la foto sola no permite saber el valor de ningún gas.")
 
     def _validar(self, texto: str, complementos: list[str], autorizacion: str) -> ResultadoValidacion:
         try:
@@ -374,8 +508,32 @@ def nombre_visible(clave: str) -> str:
     return re.sub(r"^\d{4}-\d{2}-\d{2}-[0-9a-f]{8}-", "", base)
 
 
-def _info(descripcion: str, complementos: list[str]) -> str:
+def _ubicacion(lugar: Lugar, dispositivo: tuple[float, float, float | None] | None,
+               gps_foto: tuple[float, float] | None, sitios: list[dict[str, Any]]) -> list[str]:
+    """Todas las ubicaciones conocidas, cada una con su origen."""
+    lineas = lugar.lineas()
+    if gps_foto:
+        lineas.append(f"Ubicación GPS guardada en la foto: {gps_foto[0]}, {gps_foto[1]}")
+        cercano = sitio_mas_cercano(*gps_foto, sitios)
+        if cercano:
+            lineas.append(f"Sitio de la plataforma más cercano a la foto: {cercano['etiqueta']} (a {cercano['distancia_km']} km)")
+    if dispositivo:
+        lat, lon, precision = dispositivo
+        extra = f" (precisión ±{round(precision)} m)" if precision else ""
+        lineas.append(f"Ubicación del dispositivo al subir el archivo: {lat:.6f}, {lon:.6f}{extra}")
+    return lineas
+
+
+def _campo(contenido: str, nombre: str) -> str:
+    """Un campo de un término del diccionario: «Nombre: texto.» → texto."""
+    m = re.search(rf"{nombre}:\s*(.+?)(?:\.\s+[A-ZÁÉÍÓÚ][a-záéíóú ]+:|$)", contenido, re.DOTALL)
+    return (m.group(1).strip().rstrip(".") + ".") if m else ""
+
+
+def _info(descripcion: str, complementos: list[str], ubicacion: list[str] | None = None) -> str:
     partes = [f"Descripción de quien subió el archivo: {descripcion.strip()}"]
+    if ubicacion:
+        partes.extend(ubicacion)
     if complementos:
         partes.append("Datos aportados al subirlo:\n" + "\n".join(complementos))
     return "\n".join(partes)

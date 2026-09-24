@@ -7,6 +7,8 @@ este endpoint: se consultan con consultar_datos_campo (tools/datos.py)."""
 from mcp_server import backend_client
 from mcp_server.backend_client import GASES
 from mcp_server.catalogo import CATEGORIAS
+from mcp_server.texto import normalizar
+from mcp_server.geografia import id_de_nivel, nivel_de
 
 
 NOTA_SIN_UNIDAD = (
@@ -19,10 +21,11 @@ NOTA_MEZCLA = ("Este grupo mezcla unidades distintas, así que no existe un prom
                "cada unidad tiene el suyo. Muéstralos por separado y no los combines.")
 
 
-def _por_unidad(gas, desde, hasta, sitio_id=None) -> list[dict]:
-    """Promedio, mínimo y máximo dentro de cada unidad, nunca entre unidades."""
+def _por_unidad(gas, desde, hasta, sitio_id=None, **lugar) -> list[dict]:
+    """Promedio, mínimo y máximo dentro de cada unidad, nunca entre unidades.
+    `lugar` acota por vereda, municipio o departamento (sus ids)."""
     grupos: dict = {}
-    for f in backend_client.get_mediciones(gas=gas, desde=desde, hasta=hasta, sitio=sitio_id):
+    for f in backend_client.get_mediciones(gas=gas, desde=desde, hasta=hasta, sitio=sitio_id, **lugar):
         v = f.get("valor")
         if v is None:
             continue
@@ -52,17 +55,30 @@ def _preparar(variable: str, categoria: str) -> tuple[str | None, str, dict | No
     return gas, gas, None
 
 
-def consultar_promedio(variable: str = "", sitio: str | None = None,
+def consultar_promedio(variable: str = "", sitio: str | int | None = None,
                        desde: str | None = None, hasta: str | None = None,
-                       categoria: str = "flujos") -> dict:
+                       categoria: str = "flujos", vereda: str = "", municipio: str = "",
+                       departamento: str = "") -> dict:
     """Promedio, mínimo y máximo por sitio y rango de fechas (AAAA-MM-DD).
     Categorías: flujos (indicar variable CO2, CH4 o N2O), biomasa, cos y
-    produccion (biomasa producida, en gramos), que ignoran la variable. Si el
+    produccion (biomasa producida, en gramos), que ignoran la variable. Acota por
+    sitio, vereda, municipio o departamento (en flujos); biomasa, cos y
+    produccion se agrupan por departamento. Si el
     grupo mezcla unidades devuelve una cifra por cada unidad, nunca una sola."""
+    sitio = str(sitio).strip() if sitio is not None else ""  # el modelo a veces lo manda como número
     cat = (categoria or "flujos").strip().lower()
     gas, etiqueta, error = _preparar(variable, cat)
     if error:
         return error
+
+    # «promedio de CO2 en Cundinamarca»: el modelo pasaba el departamento como sitio.
+    if sitio and not (vereda or municipio or departamento):
+        nivel = nivel_de(sitio)
+        if nivel:
+            vereda, municipio, departamento = ((sitio if nivel == n else "") for n in ("vereda", "municipio", "departamento"))
+            sitio = ""
+    lugar_pedido = next(((c, v) for c, v in (("vereda", vereda), ("municipio", municipio),
+                                             ("departamento", departamento)) if str(v or "").strip()), None)
 
     sitio_obj = None
     if sitio:
@@ -98,9 +114,17 @@ def consultar_promedio(variable: str = "", sitio: str | None = None,
             "departamento", desde=desde, hasta=hasta, categoria=cat,
         )
         grupos = [f.get("properties", {}) for f in resumen.get("features", [])]
+        aviso = ""
+        if lugar_pedido and lugar_pedido[0] == "departamento":
+            grupos = [g for g in grupos if normalizar(lugar_pedido[1]) in normalizar(g.get("nombre"))]
+        elif lugar_pedido:
+            aviso = (f"Esta categoría solo se agrupa por departamento, no por {lugar_pedido[0]}: "
+                     "dilo y muestra el departamento correspondiente.")
         if not grupos:
-            return {"variable": etiqueta, "categoria": cat, "sin_datos": True}
+            return {"variable": etiqueta, "categoria": cat, "sin_datos": True,
+                    "lugar": lugar_pedido[1] if lugar_pedido else "todos"}
         return {
+            "aviso": aviso,
             "variable": etiqueta, "categoria": cat, "agrupado_por": "departamento",
             "unidad": resumen.get("unidad"),
             "grupos": [
@@ -110,18 +134,28 @@ def consultar_promedio(variable: str = "", sitio: str | None = None,
             ],
         }
 
-    grupos = _por_unidad(gas, desde, hasta)
+    ambito, lugar = "todos los sitios", {}
+    if lugar_pedido:
+        id_lugar, nombre, err = id_de_nivel(lugar_pedido[1], lugar_pedido[0])
+        if err:
+            return err
+        ambito, lugar = f"{lugar_pedido[0]} {nombre}", {lugar_pedido[0]: id_lugar}
+    grupos = _por_unidad(gas, desde, hasta, **lugar)
     if not grupos:
-        return {"variable": etiqueta, "sitio": "todos los sitios", "sin_datos": True}
-    return {"variable": etiqueta, "categoria": cat, "sitio": "todos los sitios",
-            "por_unidad": grupos, "nota": NOTA_MEZCLA}
+        return {"variable": etiqueta, "sitio": ambito, "sin_datos": True}
+    return {"variable": etiqueta, "categoria": cat, "sitio": ambito,
+            "por_unidad": grupos, "nota": NOTA_MEZCLA,
+            "siguiente_paso": ("Esto es el promedio de todos los sitios juntos. Para saber qué sitio "
+                               "tiene el valor más alto, usa consultar_mediciones: trae el mayor de "
+                               "cada unidad con su sitio.")}
 
 
-def consultar_ultima_medicion(variable: str = "", sitio: str | None = None,
+def consultar_ultima_medicion(variable: str = "", sitio: str | int | None = None,
                               categoria: str = "flujos") -> dict:
     """La medición más reciente de una categoría de dato, opcionalmente en un
     sitio. Categorías: flujos (indicar variable CO2, CH4 o N2O), biomasa y cos.
     La respuesta incluye la unidad de esa medición concreta."""
+    sitio = str(sitio).strip() if sitio is not None else ""  # el modelo a veces lo manda como número
     cat = (categoria or "flujos").strip().lower()
     gas, etiqueta, error = _preparar(variable, cat)
     if error:

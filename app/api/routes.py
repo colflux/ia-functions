@@ -3,7 +3,8 @@ from dataclasses import asdict
 from fastapi import APIRouter, File, Form, Header, HTTPException, UploadFile
 
 from app.api.schemas import (
-    CargaResponse, ChatRequest, ChatResponse, HistorialResponse, IngestRequest, IngestResponse,
+    CargaResponse, ChatRequest, ChatResponse, DescripcionRequest, HistorialResponse, IngestRequest,
+    IngestResponse, LugarRequest,
 )
 from app.bootstrap.container import (
     get_carga_documentos, get_conversation_repository, get_orchestrator, get_rag_service,
@@ -27,11 +28,47 @@ def ingest(payload: IngestRequest) -> IngestResponse:
     return IngestResponse(chunks_indexed=count)
 
 
+@router.post("/documentos/descripcion", response_model=CargaResponse)
+def revisar_descripcion(payload: DescripcionRequest, authorization: str | None = Header(default=None)) -> CargaResponse:
+    """Primer paso de la subida: lo que la persona dice que va a subir. Si no
+    tiene que ver con COLFLUX, `aceptado` es false y el chat no sigue."""
+    carga = get_carga_documentos()
+    try:
+        carga.verificar_permiso(authorization)
+        return CargaResponse(**asdict(carga.revisar_descripcion(payload.descripcion)))
+    except ErrorDeCarga as exc:
+        raise HTTPException(status_code=exc.estado, detail=exc.mensaje)
+
+
+@router.post("/documentos/lugar", response_model=CargaResponse)
+def revisar_lugar(payload: LugarRequest, authorization: str | None = Header(default=None)) -> CargaResponse:
+    """Segundo paso: de dónde es el archivo. Devuelve el lugar interpretado o,
+    si no se entiende o falta algo, `aceptado` false con lo que falta."""
+    carga = get_carga_documentos()
+    try:
+        carga.verificar_permiso(authorization)
+        lugar = carga.revisar_lugar(payload.lugar)
+    except ErrorDeCarga as exc:
+        if exc.estado == 422:
+            return CargaResponse(aceptado=False, mensaje=exc.mensaje)
+        raise HTTPException(status_code=exc.estado, detail=exc.mensaje)
+    mensaje = f"Lugar: {lugar.resumen()}."
+    if lugar.sitio_cercano:
+        mensaje += f" El sitio de la plataforma más cercano es {lugar.sitio_cercano['etiqueta']}, a {lugar.sitio_cercano['distancia_km']} km."
+    if lugar.avisos:
+        mensaje += " " + " ".join(lugar.avisos)
+    return CargaResponse(aceptado=True, mensaje=mensaje, lugar=lugar.resumen())
+
+
 @router.post("/documentos", response_model=CargaResponse)
 def subir_documento(
     archivo: UploadFile = File(...),
     descripcion: str = Form(default=""),
     complementos: str = Form(default=""),
+    lugar: str = Form(default=""),
+    latitud: float | None = Form(default=None),
+    longitud: float | None = Form(default=None),
+    precision: float | None = Form(default=None),
     authorization: str | None = Header(default=None),
 ) -> CargaResponse:
     """Sube un archivo desde el chat. Exige sesión con nivel reportador; el
@@ -39,7 +76,9 @@ def subir_documento(
     coincide con la `descripcion` que dio la persona antes de elegirlo.
     Si es un archivo de datos y le faltan campos obligatorios, responde
     `pendiente` con lo que falta; el chat reenvía el archivo con las
-    respuestas de la persona en `complementos` (una por línea)."""
+    respuestas de la persona en `complementos` (una por línea).
+    `lugar` es obligatorio; `latitud`, `longitud` y `precision` (metros) son
+    la ubicación del dispositivo al subir, si el navegador la dio."""
     carga = get_carga_documentos()
     try:
         usuario = carga.verificar_permiso(authorization)
@@ -52,6 +91,8 @@ def subir_documento(
             archivo.content_type,
             descripcion,
             [linea.strip() for linea in complementos.splitlines() if linea.strip()],
+            lugar,
+            (latitud, longitud, precision) if latitud is not None and longitud is not None else None,
         )
     except ErrorDeCarga as exc:
         raise HTTPException(status_code=exc.estado, detail=exc.mensaje)

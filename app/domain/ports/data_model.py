@@ -12,5 +12,6 @@ class DataModelCatalog(ABC):
 
     @abstractmethod
     def sitios(self) -> list[dict[str, Any]]:
-        """Sitios registrados: [{"id", "nombre", "unidades": [nombres de unidades de muestreo]}]"""
+        """Sitios registrados: [{"id", "nombre", "unidades": [nombres de unidades de
+        muestreo], "vereda", "municipio", "departamento", "latitud", "longitud"}]"""
         raise NotImplementedError

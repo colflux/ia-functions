@@ -11,6 +11,7 @@ modelo."""
 
 import json
 import logging
+import unicodedata
 import re
 
 from app.domain.models import Message, PendingConfirmation, ToolCall
@@ -25,6 +26,13 @@ MAX_TURNS = 7
 HISTORY_TURNS = 6
 HISTORY_MINUTES = 30
 HISTORY_MAX_CHARS = 6000
+
+# Si la pregunta se parece mucho a un término del diccionario de campo, su
+# definición se entrega al modelo desde el principio (ver _consultar_diccionario).
+SIEMPRE_VISIBLES = {"listar_sitios"}
+HERRAMIENTA_DICCIONARIO = "buscar_diccionario"
+PARECIDO_DICCIONARIO_PREVIO = 0.86
+MAX_TERMINOS_PREVIOS = 2
 
 CONFIRMATIONS = {"confirmo", "confirmar", "si confirmo", "sí confirmo", "sí, confirmo"}
 
@@ -55,7 +63,19 @@ SYSTEM_PROMPT = (
     "marcas de cita, y no agregues conteos ni valores de ejemplo que no se pidieron. "
     "No afirmes relaciones que los datos no muestran: si algo no se puede comprobar "
     "con los datos, dilo en una frase. Las interpretaciones de expresiones de campo "
-    "salen del diccionario; si una no está, dilo."
+    "salen del diccionario; si una no está, dilo y no agregues una interpretación "
+    "propia. Si el diccionario trae un término parecido pero no el mismo, di que el "
+    "término exacto no está y presenta el parecido con su propio nombre, sin mezclarlos. "
+    "Menciona los archivos subidos solo si contienen el dato que se pidió. "
+    "Nunca conviertas valores entre unidades (nmol, umol, g): da cada valor en la "
+    "unidad en que viene y compara solo dentro de una misma unidad. "
+    "Si mencionan un nombre que puede ser un sitio, vereda o municipio, búscalo con "
+    "listar_sitios; SWAMP e IDEAM son proyectos, no sitios. Nombres de personas, "
+    "testimonios y entrevistas se buscan en los documentos. Nunca digas que no tienes "
+    "información sin haber consultado antes una herramienta, salvo que la pregunta no "
+    "tenga que ver con COLFLUX. "
+    "Si la pregunta no tiene que ver con COLFLUX, sus ecosistemas o sus datos, dilo "
+    "en una frase y ofrece ayuda con la plataforma."
 )
 
 
@@ -103,6 +123,12 @@ def _texto_plano(texto: str) -> str:
     limpio = re.sub(r"^\s{0,3}#{1,6}\s+", "", limpio, flags=re.MULTILINE)
     return limpio
 
+def _normalizar_termino(texto: str) -> str:
+    """Minúsculas, sin tildes, comillas ni signos: «“El humedal está hirviendo”» → «el humedal esta hirviendo»."""
+    base = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
+    return " ".join(re.sub(r"[^a-z0-9 ]", " ", base).split())
+
+
 class AgentOrchestrator:
     def __init__(
         self,
@@ -110,11 +136,13 @@ class AgentOrchestrator:
         tools: ToolRegistry,
         conversations: ConversationRepository,
         router=None,
+        reglas=None,
     ) -> None:
         self._llm = llm
         self._tools = tools
         self._conversations = conversations
         self._router = router
+        self._reglas = reglas
 
     def respond(self, question: str, external_user_id: str) -> dict:
         text = (question or "").strip()
@@ -137,6 +165,12 @@ class AgentOrchestrator:
 
         todas = self._tools.list_tools()
         visibles = self._router.elegir(text, todas) if self._router else todas
+        # listar_sitios siempre va: un nombre propio suelto («¿dónde queda Calostros?»)
+        # no se parece a ninguna descripción y el modelo contestaba que no sabía.
+        visibles = [*visibles, *[t for t in todas if t.name in SIEMPRE_VISIBLES and t not in visibles]]
+        if self._consultar_diccionario(text, {t.name for t in todas}, messages, tools_used, sources):
+            # La herramienta ya aparece en la conversación: se declara también.
+            visibles = [*visibles, *[t for t in todas if t.name == HERRAMIENTA_DICCIONARIO and t not in visibles]]
 
         for vuelta in range(MAX_TURNS):
             # La primera vuelta va con la seleccion del enrutador, que es donde esta
@@ -163,6 +197,10 @@ class AgentOrchestrator:
                 result_sources = result.pop("sources", None)
                 if result_sources:
                     sources.extend(result_sources)
+                # Si la pregunta ya es sobre una expresión del diccionario, esa es la
+                # relación que importa: no se añade otra por regla.
+                if HERRAMIENTA_DICCIONARIO not in tools_used:
+                    self._anotar_diccionario(call.name, call.arguments, result, sources)
 
                 proposal = result.pop("pending_confirmation", None)
                 if proposal:
@@ -226,6 +264,85 @@ class AgentOrchestrator:
         answer = result.get("mensaje") or result.get("error", "Listo.")
         self._conversations.save_turn(external_user_id, "confirmo", answer, [pending.tool_name], None)
         return {"answer": answer, "sources": [], "tools_used": [pending.tool_name], "pending_confirmation": None}
+
+    def _consultar_diccionario(self, texto: str, disponibles: set[str], messages: list[Message],
+                               tools_used: list[str], sources: list[dict]) -> bool:
+        """Si la pregunta se parece mucho a un término del diccionario de campo, su
+        definición se le entrega al modelo desde el principio, como si la hubiera
+        pedido. Dejándolo decidir, ante «¿qué es la turba desnuda?» respondía de
+        memoria con una definición propia, aunque el término está en el diccionario.
+        El umbral es alto para no cargar definiciones en preguntas de datos."""
+        if HERRAMIENTA_DICCIONARIO not in disponibles:
+            return False
+        try:
+            resultado = self._tools.call_tool(HERRAMIENTA_DICCIONARIO, {"texto": texto})
+        except Exception:  # sin diccionario la pregunta se atiende igual
+            logger.exception("DICCIONARIO PREVIO falló")
+            return False
+        pregunta = _normalizar_termino(texto)
+        # Solo en preguntas de definición: en «mediciones del páramo de Guerrero»
+        # nombrar «páramo» no pide su definición.
+        es_definicion = bool(re.search(r"\b(que (es|son|significa|quiere decir)|define|definicion|significado)\b", pregunta))
+
+        def nombrado(fila: dict) -> bool:
+            # «¿qué es un páramo?» nombra el término «Páramo» tal cual, aunque el
+            # parecido por significado no llegue al umbral: también cuenta.
+            titulo = re.sub(r"^diccionario-\d+\s*", "", str(fila.get("source", "")))
+            return es_definicion and any(len(n) >= 5 and n in pregunta for n in map(_normalizar_termino, re.split(r"/", titulo)))
+
+        cercanos = lambda filas: [f for f in filas or []
+                                  if f.get("score", 0) >= PARECIDO_DICCIONARIO_PREVIO or nombrado(f)][:MAX_TERMINOS_PREVIOS]
+        resultados = cercanos(resultado.get("resultados"))
+        if not resultados:
+            return False
+        logger.info("DICCIONARIO PREVIO %s", [(r.get("source"), round(r.get("score", 0), 3)) for r in resultados])
+        llamada = ToolCall(name=HERRAMIENTA_DICCIONARIO, arguments={"texto": texto})
+        messages.append(Message(role="assistant", text="", tool_calls=[llamada]))
+        messages.append(Message(role="tool", tool_call_id=llamada.id, tool_name=HERRAMIENTA_DICCIONARIO,
+                                tool_result={"resultados": resultados,
+                                             "nota": "Términos del diccionario de campo muy parecidos a la "
+                                                     "pregunta. Si aplican, úsalos y cítalos."}))
+        tools_used.append(HERRAMIENTA_DICCIONARIO)
+        sources.extend(cercanos(resultado.get("sources")))
+        return True
+
+    def _anotar_diccionario(self, nombre: str, argumentos: dict, resultado: dict, sources: list[dict]) -> None:
+        """Si el dato que devolvió la herramienta cumple una regla del diccionario
+        de campo (p. ej. CH4 ≥ 0.0735 µmol/m²/s → «olor a huevo podrido»), se le
+        añade al resultado para que el modelo lo mencione en una frase. La regla
+        la evalúa el código, no el modelo: así no inventa relaciones."""
+        if self._reglas is None or not isinstance(resultado, dict):
+            return
+        try:
+            if nombre == "consultar_ultima_medicion" and (argumentos.get("categoria") or "flujos") == "flujos":
+                gas = str(argumentos.get("variable") or "")
+                ultima = resultado.get("ultima") or {}
+                candidatos = [(ultima.get("valor"), ultima.get("unidad"), "la última medición")]
+            elif nombre == "consultar_mediciones":
+                gas = str(argumentos.get("gas") or "CO2")
+                candidatos = [(m.get("valor"), unidad, f"el valor más alto en {unidad}")
+                              for unidad, m in (resultado.get("mayor_por_unidad") or {}).items()]
+            else:
+                return
+            for valor, unidad, que in candidatos:
+                regla = self._reglas.evaluar(gas, unidad, valor)
+                if regla:
+                    break
+            else:
+                return
+        except Exception:
+            logger.exception("REGLAS no se pudo evaluar el resultado de %s", nombre)
+            return
+        logger.info("REGLAS %s %s %s cumple «%s»", gas, valor, unidad, regla.termino)
+        resultado["diccionario_de_campo"] = {
+            "termino": regla.termino,
+            "dato": f"{que}: {valor} {unidad}",
+            "regla": f"{regla.nivel} si el flujo de {regla.gas} es al menos el umbral del diccionario",
+            "nota": ("Termina la respuesta con UNA frase breve: según el diccionario de campo, con "
+                     f"{que} ({valor} {unidad}) es posible observar «{regla.termino}» en ese lugar. "
+                     "No lo presentes como un hecho observado ni lo extiendas."),
+        }
+        sources.append({"source": regla.fuente, "content": regla.contenido, "score": 1.0})
 
     def _encadenar(self, encadenadas: list[dict], disponibles: set[str], messages: list[Message],
                    tools_used: list[str], sources: list[dict]) -> None:
