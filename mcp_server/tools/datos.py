@@ -9,6 +9,7 @@ import re
 from mcp_server import backend_client
 from mcp_server.geografia import nivel_de
 from mcp_server.catalogo import VISTAS
+from mcp_server.texto import normalizar
 
 def _clave_fecha(datos: dict) -> str:
     """La clave Modelo.campo de la columna de fecha de la vista, si la hay. Se
@@ -45,7 +46,7 @@ def _estadisticas(filas: list[dict]) -> dict:
         for clave, v in acumulado.items() if len(v) > 1
     }
 
-def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
+def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str | int = "",
                           fecha: str = "", limite: int = 5) -> dict:
     """Registros de materia orgánica muerta (tipo mom) o de variables
     ambientales (tipo clima: temperatura del suelo y del aire, presión, humedad,
@@ -53,9 +54,26 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
     número, y por fecha: 2021, 2021-10 o 2021-10-05. No admite rangos de fechas
     ni filtro por vereda, municipio o departamento. Úsala cuando pregunten por
     hojarasca, restos vegetales o condiciones ambientales."""
+    sitio = str(sitio).strip() if sitio is not None else ""  # el modelo a veces lo manda como número
     clave = (tipo or "").strip().lower()
     if clave not in VISTAS:
+        # «carbono orgánico del suelo» o «biomasa» no son datos de campo de esta
+        # herramienta: se indica cuál usar en vez de solo listar los tipos.
+        otra = next((c for p, c in (("carbono", "cos"), ("suelo", "cos"), ("cos", "cos"),
+                                    ("biomasa", "biomasa"), ("produccion", "produccion"))
+                     if p in normalizar(clave)), None)
+        if otra:
+            return {"error": f"'{tipo}' no es un tipo de esta herramienta.",
+                    "siguiente_paso": f"Usa consultar_ultima_medicion o consultar_promedio con categoria='{otra}'."}
         return {"error": "Tipo no reconocido.", "tipos_validos": VISTAS}
+
+    if sitio and not proyecto:
+        # «temperatura del suelo en SWAMP»: el modelo pasaba el proyecto como sitio.
+        buscado = normalizar(str(sitio))
+        como_proyecto = [p for p in backend_client.get_proyectos()
+                         if len(buscado) >= 4 and normalizar(p["nombre"]).startswith(buscado)]
+        if len(como_proyecto) == 1:
+            proyecto, sitio = como_proyecto[0]["nombre"], ""
 
     nombre_proyecto = str(proyecto or "").strip()
     if not nombre_proyecto:
@@ -64,7 +82,11 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str = "",
             total = backend_client.get_datos(p["id"], clave, limite=1).get("total", 0)
             if total:
                 resumen.append({"proyecto": p["nombre"], "registros": total})
-        if len(resumen) != 1:
+        if not resumen:
+            return {"tipo": clave, "descripcion": VISTAS[clave], "sin_datos": True,
+                    "nota": ("No hay registros de este tipo cargados en ningún proyecto de la "
+                             "plataforma. Dilo así, sin pedir más filtros.")}
+        if len(resumen) > 1:
             return {"tipo": clave, "descripcion": VISTAS[clave],
                     "por_proyecto": resumen,
                     "siguiente_paso": "Indica el proyecto para acotar por sitio o por fecha."}
