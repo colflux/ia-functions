@@ -13,6 +13,16 @@ class IngestResponse(BaseModel):
     chunks_indexed: int
 
 
+class CargaResponse(BaseModel):
+    aceptado: bool
+    mensaje: str
+    tipo: str | None = None
+    fragmentos: int = 0
+    archivo: str | None = None
+    pendiente: bool = False
+    faltantes: list[str] = []
+
+
 class ChatRequest(BaseModel):
     message: str
     usuario: str = "anonimo"

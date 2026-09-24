@@ -30,6 +30,19 @@ def _resumir(filas: list[dict]) -> dict:
     }
 
 
+def _terminos_archivos(gas: str, sitio: str, desde: str, hasta: str,
+                       latitud: float | None, longitud: float | None) -> list[str]:
+    """Lo que debe aparecer, tal cual, en una fila de un archivo subido."""
+    terminos = [gas]
+    if desde and (not hasta or hasta == desde):
+        terminos.append(desde)  # un rango de fechas no se puede buscar como texto
+    if latitud is not None and longitud is not None:
+        terminos += [str(latitud), str(longitud)]
+    elif sitio and not str(sitio).strip().isdigit():
+        terminos.append(str(sitio).strip())
+    return terminos
+
+
 def consultar_mediciones(gas: str = "CO2", sitio: str = "", vereda: str = "",
                          municipio: str = "", departamento: str = "",
                          desde: str = "", hasta: str = "", limite: int = 10,
@@ -93,7 +106,13 @@ def consultar_mediciones(gas: str = "CO2", sitio: str = "", vereda: str = "",
                                               hasta=hasta or None, **params)
     if not filas:
         return {"gas": g, "ambito": ambito, "sin_datos": True,
-                "nota": "No hay mediciones de ese gas con esos criterios."}
+                "nota": "No hay mediciones de ese gas con esos criterios en la plataforma.",
+                # El orquestador ejecuta esta consulta de una vez: el dato puede estar
+                # en un archivo subido desde el chat, que no pasa por el backend.
+                "consultar_tambien": {
+                    "herramienta": "consultar_archivos_subidos",
+                    "argumentos": {"terminos": _terminos_archivos(g, sitio, desde, hasta, latitud, longitud)},
+                }}
     salida = {"gas": g, "ambito": ambito}
     salida.update(_resumir(filas))
     salida["mediciones"] = [

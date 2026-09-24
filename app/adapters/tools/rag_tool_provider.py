@@ -9,7 +9,11 @@ from typing import Any
 
 from app.domain.models import ToolSpec
 from app.domain.ports.tool_provider import ToolProvider
+from app.domain.services.carga_documentos import nombre_visible
 from app.domain.services.rag_service import RagService
+
+
+MAX_PALABRAS_LISTADO = 3
 
 
 class RagToolProvider(ToolProvider):
@@ -54,7 +58,16 @@ class RagToolProvider(ToolProvider):
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         texto = (arguments.get("texto") or "").strip()
         if name == "buscar_documentos":
-            return self._search(texto, collection="documents")
+            resultado = self._search(texto, collection="documents")
+            if len(texto.split()) <= MAX_PALABRAS_LISTADO:
+                # Buscar "entrevistas" suele ser preguntar qué hay, y la búsqueda por
+                # significado trae solo lo más parecido: se pide también la lista
+                # completa de archivos subidos (el orquestador la ejecuta).
+                resultado["consultar_tambien"] = {
+                    "herramienta": "consultar_archivos_subidos",
+                    "argumentos": {"solo_lista": True},
+                }
+            return resultado
         if name == "buscar_diccionario":
             return self._search(texto, collection="dictionary")
         return {"error": f"Herramienta desconocida: {name}"}
@@ -64,4 +77,7 @@ class RagToolProvider(ToolProvider):
         if not matches:
             return {"resultados": [], "mensaje": "Nada relevante encontrado."}
         sources = [{"source": m.source, "content": m.content, "score": m.score} for m in matches]
-        return {"resultados": sources, "sources": sources}
+        # Al modelo, el nombre legible del archivo; al chat, la clave del bucket,
+        # que es la que permite ofrecer la descarga del original.
+        resultados = [{**s, "source": nombre_visible(s["source"])} for s in sources]
+        return {"resultados": resultados, "sources": sources}
