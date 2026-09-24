@@ -9,7 +9,7 @@ from typing import Any
 
 from app.domain.models import ToolSpec
 from app.domain.ports.tool_provider import ToolProvider
-from app.domain.services.carga_documentos import nombre_visible
+from app.domain.services.carga_documentos import es_archivo_subido, nombre_visible
 from app.domain.services.rag_service import RagService
 
 
@@ -79,5 +79,8 @@ class RagToolProvider(ToolProvider):
         sources = [{"source": m.source, "content": m.content, "score": m.score} for m in matches]
         # Al modelo, el nombre legible del archivo; al chat, la clave del bucket,
         # que es la que permite ofrecer la descarga del original.
-        resultados = [{**s, "source": nombre_visible(s["source"])} for s in sources]
+        # Solo las claves del bucket se acortan; un término como
+        # «Olor a huevo podrido / podrido» quedaba reducido a « podrido».
+        resultados = [{**s, "source": nombre_visible(s["source"]) if es_archivo_subido(s["source"]) else s["source"]}
+                      for s in sources]
         return {"resultados": resultados, "sources": sources}

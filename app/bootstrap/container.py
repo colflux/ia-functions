@@ -9,6 +9,7 @@ from app.adapters.backend.data_model import BackendDataModel
 from app.adapters.embeddings.sentence_transformers_provider import SentenceTransformersProvider
 from app.adapters.llm.anthropic import AnthropicProvider
 from app.adapters.llm.cerebras import CerebrasProvider
+from app.adapters.llm.failover import FailoverProvider
 from app.adapters.llm.gemini import GeminiProvider
 from app.adapters.llm.groq import GroqProvider
 from app.adapters.llm.ollama import OllamaProvider
@@ -23,26 +24,32 @@ from app.config import parsed_mcp_servers, settings
 from app.domain.ports.llm_provider import LLMProvider
 from app.domain.services.agent_orchestrator import AgentOrchestrator
 from app.domain.services.carga_documentos import CargaDocumentos
+from app.domain.services.reglas_diccionario import ReglasDiccionario
 from app.domain.services.rag_service import RagService
 from app.domain.services.tool_registry import ToolRegistry
 from app.domain.services.tool_router import ToolRouter
 from app.domain.services.validacion_datos import ValidadorDatos
 
 
+PROVEEDORES_LLM = {
+    "cerebras": CerebrasProvider,
+    "groq": GroqProvider,
+    "gemini": GeminiProvider,
+    "ollama": OllamaProvider,
+    "anthropic": AnthropicProvider,
+}
+
+
 @lru_cache
 def get_llm_provider() -> LLMProvider:
-    provider = settings.llm_provider.lower()
-    if provider == "groq":
-        return GroqProvider()
-    if provider == "cerebras":
-        return CerebrasProvider()
-    if provider == "gemini":
-        return GeminiProvider()
-    if provider == "ollama":
-        return OllamaProvider()
-    if provider == "anthropic":
-        return AnthropicProvider()
-    raise ValueError(f"Unknown LLM_PROVIDER: {settings.llm_provider}")
+    """El proveedor principal (LLM_PROVIDER) y, detrás, los de respaldo
+    (LLM_RESPALDO): si uno no puede atender una llamada, se pasa al siguiente."""
+    nombres = [settings.llm_provider, *settings.llm_respaldo.split(",")]
+    nombres = list(dict.fromkeys(n.strip().lower() for n in nombres if n.strip()))
+    desconocidos = [n for n in nombres if n not in PROVEEDORES_LLM]
+    if desconocidos:
+        raise ValueError(f"Proveedor de modelo desconocido: {', '.join(desconocidos)}")
+    return FailoverProvider([PROVEEDORES_LLM[n]() for n in nombres])
 
 
 @lru_cache
@@ -85,7 +92,8 @@ def get_conversation_repository() -> PostgresConversationRepository:
 def get_orchestrator() -> AgentOrchestrator:
     return AgentOrchestrator(get_llm_provider(), get_tool_registry(),
                              get_conversation_repository(),
-                             ToolRouter(get_embedding_provider()))
+                             ToolRouter(get_embedding_provider()),
+                             ReglasDiccionario(PgVectorStore()))
 
 
 @lru_cache
@@ -104,6 +112,8 @@ def get_carga_documentos() -> CargaDocumentos:
         llm=get_llm_provider(),
         rag=get_rag_service(),
         validador=ValidadorDatos(get_llm_provider(), BackendDataModel(settings.backend_api_base_url)),
+        modelo=BackendDataModel(settings.backend_api_base_url),
+        herramientas=get_tool_registry(),
         revisor_imagenes=(
             GeminiVision(settings.gemini_api_key, settings.image_model)
             if settings.gemini_api_key else None

@@ -21,6 +21,16 @@ class CargaResponse(BaseModel):
     archivo: str | None = None
     pendiente: bool = False
     faltantes: list[str] = []
+    reintentar: bool = False
+    lugar: str | None = None
+
+
+class DescripcionRequest(BaseModel):
+    descripcion: str
+
+
+class LugarRequest(BaseModel):
+    lugar: str
 
 
 class ChatRequest(BaseModel):

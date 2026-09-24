@@ -25,11 +25,18 @@ class BackendDataModel(DataModelCatalog):
     def sitios(self) -> list[dict[str, Any]]:
         respuesta = httpx.get(f"{self._base_url}/api/geo/sitios/", timeout=self._timeout)
         respuesta.raise_for_status()
-        return [
-            {
-                "id": f["properties"]["id"],
-                "nombre": f["properties"].get("nombre") or "",
-                "unidades": [u["nombre"] for u in f["properties"].get("unidades_muestreo") or []],
-            }
-            for f in respuesta.json()["features"]
-        ]
+        sitios = []
+        for f in respuesta.json()["features"]:
+            props = f["properties"]
+            lon, lat = ((f.get("geometry") or {}).get("coordinates") or [None, None])[:2]
+            sitios.append({
+                "id": props["id"],
+                "nombre": props.get("nombre") or "",
+                "unidades": [u["nombre"] for u in props.get("unidades_muestreo") or []],
+                "vereda": props.get("vereda") or "",
+                "municipio": props.get("municipio") or "",
+                "departamento": props.get("departamento") or "",
+                "latitud": lat,
+                "longitud": lon,
+            })
+        return sitios

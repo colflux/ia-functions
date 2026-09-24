@@ -7,6 +7,7 @@ class ImageReviewer(ABC):
 
     @abstractmethod
     def revisar(self, contenido: bytes, mime: str, descripcion: str) -> dict[str, Any] | None:
-        """{"relacionado": bool, "coincide": bool, "motivo": str, "descripcion": str},
+        """{"relacionado": bool, "coincide": bool, "motivo": str, "descripcion": str,
+        "observaciones": [rasgos visibles en lenguaje de campo]},
         o None si la respuesta del modelo no se pudo interpretar."""
         raise NotImplementedError
