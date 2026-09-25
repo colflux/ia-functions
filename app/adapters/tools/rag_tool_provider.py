@@ -17,11 +17,12 @@ MAX_PALABRAS_LISTADO = 3
 
 
 class RagToolProvider(ToolProvider):
-    def __init__(self, rag_service: RagService, top_k: int, min_score: float, depurador=None) -> None:
+    def __init__(self, rag_service: RagService, top_k: int, min_score: float, depurador=None, wiki=None) -> None:
         self._rag = rag_service
         self._top_k = top_k
         self._min_score = min_score
         self._depurador = depurador  # retira archivos borrados del bucket antes de buscar
+        self._wiki = wiki  # vuelve a leer la wiki del proyecto si ya toca (sin esperar)
 
     def list_tools(self) -> list[ToolSpec]:
         return [
@@ -29,7 +30,11 @@ class RagToolProvider(ToolProvider):
                 name="buscar_documentos",
                 description=(
                     "Busca por significado en entrevistas, informes y notas de campo "
-                    "indexadas. Devuelve los fragmentos más relevantes con su fuente."
+                    "indexadas y en la wiki del proyecto COLFLUX: qué es el proyecto, sus "
+                    "objetivos, equipo e instituciones, roadmap y funcionalidades, cómo se "
+                    "mide el carbono, diplomado, territorios, encuentros, noticias, "
+                    "preguntas frecuentes y la arquitectura de la plataforma. Devuelve los "
+                    "fragmentos más relevantes con su fuente."
                 ),
                 parameters={
                     "type": "object",
@@ -61,6 +66,8 @@ class RagToolProvider(ToolProvider):
         if name == "buscar_documentos":
             if self._depurador:
                 self._depurador.depurar()
+            if self._wiki:
+                self._wiki.sincronizar_si_toca()
             resultado = self._search(texto, collection="documents")
             if len(texto.split()) <= MAX_PALABRAS_LISTADO:
                 # Buscar "entrevistas" suele ser preguntar qué hay, y la búsqueda por

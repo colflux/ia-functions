@@ -117,6 +117,25 @@ class PgVectorStore(VectorStore):
             cur = conn.execute("DELETE FROM document_chunks WHERE source = %s", (fuente,))
             return cur.rowcount
 
+    def fragmentos(self, fuente: str) -> list[str]:
+        with get_connection() as conn:
+            filas = conn.execute(
+                "SELECT content FROM document_chunks WHERE source = %s ORDER BY id", (fuente,)
+            ).fetchall()
+        return [f[0] for f in filas]
+
+    def reemplazar(self, fuente: str, chunks: list[str], embeddings: list[list[float]], collection: str) -> int:
+        with get_connection() as conn:
+            with conn.transaction():
+                conn.execute("DELETE FROM document_chunks WHERE source = %s", (fuente,))
+                with conn.cursor() as cur:
+                    cur.executemany(
+                        "INSERT INTO document_chunks (source, content, collection, embedding) "
+                        "VALUES (%s, %s, %s, %s)",
+                        [(fuente, chunk, collection, Vector(e)) for chunk, e in zip(chunks, embeddings)],
+                    )
+        return len(chunks)
+
     def pendientes_de_reindexar(self, limite: int) -> list[tuple[int, str]]:
         with get_connection() as conn:
             with conn.cursor() as cur:

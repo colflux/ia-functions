@@ -38,6 +38,22 @@ services:
     volumes:
       - ./mcp_server:/app/mcp_server
 
+  telegram:
+    # Bot de Telegram: lee los mensajes por consulta periódica (no necesita
+    # HTTPS ni puertos abiertos) y responde con el mismo /chat de la web.
+    # Sin TELEGRAM_BOT_TOKEN en .env, sale sin hacer nada.
+    build: .
+    restart: on-failure
+    command: python -m telegram_bot
+    environment:
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
+      TELEGRAM_MENSAJES_POR_HORA: ${TELEGRAM_MENSAJES_POR_HORA:-20}
+      ASISTENTE_URL: http://api:8000
+    depends_on:
+      - api
+    volumes:
+      - ./telegram_bot:/app/telegram_bot
+
   db:
     image: pgvector/pgvector:pg16
     restart: unless-stopped

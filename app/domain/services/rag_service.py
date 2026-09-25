@@ -18,6 +18,15 @@ class RagService:
         embeddings = self._embeddings.embed(chunks)
         return self._vector_store.upsert(source, chunks, embeddings, collection)
 
+    def actualizar_fuente(self, source: str, text: str, collection: str = DEFAULT_COLLECTION) -> int | None:
+        """Reemplaza los fragmentos de `source` por los de `text` en una sola
+        transacción. Si el texto no cambió no recalcula nada y devuelve None."""
+        chunks = chunk_text(text)
+        if chunks == self._vector_store.fragmentos(source):
+            return None
+        embeddings = self._embeddings.embed(chunks) if chunks else []
+        return self._vector_store.reemplazar(source, chunks, embeddings, collection)
+
     def retrieve(
         self,
         question: str,
