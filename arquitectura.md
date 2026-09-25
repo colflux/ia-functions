@@ -36,10 +36,10 @@ backend Django vía un servidor MCP propio.
 - [ ] Funcionalidad 7 — API
 - [ ] Funcionalidad 8 — `docker-compose.yml`
 - [x] **Funcionalidad 9 — Escritura de mediciones vía chat con trazabilidad**:
-  confirmada. `proponer_guardar_medicion`/`confirmar_medicion` deben dejar
-  registrado que el dato vino del chat (no del ETL formal), para
-  calidad/procedencia. Depende de que el backend agregue el campo/endpoint
-  correspondiente — la tool queda declarada y lista, pendiente de activarse.
+  implementada en el asistente (`registrar_medicion` → «confirmo» →
+  `guardar_medicion`). Las mediciones quedan en la tabla `mediciones_chat` de
+  la base del asistente con estado `pendiente_etl`; pasarán a la plataforma
+  cuando el ETL pueda recibirlas. Ver `specs/mediciones-chat-y-excel.md`.
 
 ## 1. Diagrama de componentes
 
@@ -75,7 +75,7 @@ flowchart TB
     end
 
     subgraph McpServer["mcp_server/ · servidor MCP (proceso aparte)"]
-        McpTools["tools/sitios.py, mediciones.py,\nmediciones_chat.py"]
+        McpTools["tools/sitios.py, mediciones.py,\nmediciones_gei.py, datos.py"]
         BackendClient["backend_client.py (httpx)"]
     end
 
@@ -155,9 +155,6 @@ mcp_server/                      # módulo aparte — su propio proceso/servicio
     sitios.py                    # listar_sitios -> GET /api/geo/sitios/
     mediciones.py                # consultar_promedio, consultar_ultima_medicion
                                   # -> GET /api/geo/resumen/ (y /series/ si hace falta detalle)
-    mediciones_chat.py           # proponer_guardar_medicion, confirmar_medicion:
-                                  # declaradas pero devuelven "requiere endpoint
-                                  # en el backend (no implementado)" hasta que exista
 ```
 
 Regla de dependencia: `domain/` no importa nada de `adapters/` ni de FastAPI;
@@ -226,9 +223,10 @@ lugar que conoce todas las implementaciones concretas y las conecta según
      `buscar_diccionario`.
    - Remotas (`mcp_tool_provider.py` → `mcp_server/`, protocolo MCP real):
      `listar_sitios`, `consultar_promedio`, `consultar_ultima_medicion`
-     (funcionales, sobre la API pública del backend) y
-     `proponer_guardar_medicion`/`confirmar_medicion` (declaradas, responden
-     "no disponible: falta endpoint en el backend").
+     (funcionales, sobre la API pública del backend).
+   - Locales de escritura (`mediciones_chat_tool_provider.py`):
+     `registrar_medicion`, `consultar_mediciones_chat` y `guardar_medicion`,
+     esta última oculta al modelo: solo la ejecuta el orquestador tras «confirmo».
 
    Si no hay ningún servidor MCP registrado (ver punto 5), el `ToolRegistry`
    simplemente omite las tools remotas sin romper el resto del agente.
@@ -268,19 +266,18 @@ lugar que conoce todas las implementaciones concretas y las conecta según
    (lista de `nombre=url`, para poder registrar más de un servidor MCP el
    día que haga falta sin cambiar código).
 9. **Escritura de mediciones vía chat, con trazabilidad de calidad**
-   (`proponer_guardar_medicion` / `confirmar_medicion`): el flujo completo
-   ya definido (proponer → mostrar resumen → esperar "confirmo" →
-   escribir) debe dejar registrado, en el dato mismo, que **su origen fue el
-   chat y no el ETL formal** — para que cualquier análisis o reporte pueda
+   (`registrar_medicion` → «confirmo» → `guardar_medicion`): el flujo
+   (proponer → mostrar resumen → esperar "confirmo" → escribir) deja
+   registrado que **su origen fue el chat y no el ETL formal** — para que cualquier análisis o reporte pueda
    distinguir calidad/procedencia del dato (igual que el compañero separó
    `MedicionRapidaChat` de `MuestraGEI`/`SubmuestraGEI`, en vez de
    mezclarlas). Esto **depende del backend**: necesita o bien reutilizar un
    modelo tipo `MedicionRapidaChat` con su propio flag de origen, o un campo
    `origen`/`fuente` en el modelo de mediciones existente. Como no se toca
-   `colflux-backend-ia` en esta fase, la tool queda **declarada y lista**
-   en `mcp_server/tools/mediciones_chat.py`, pero solo se activa (deja de
-   responder "no disponible") cuando el backend exponga el endpoint de
-   escritura correspondiente con ese campo de origen.
+   `colflux-backend-ia`, las mediciones se guardan por ahora en la base del
+   asistente (tabla `mediciones_chat`, estado `pendiente_etl`) y pasarán a
+   la plataforma cuando el ETL o un endpoint de escritura con campo de
+   origen lo permitan.
 
 ## Fuera de alcance real (no por diseño, sino por falta de endpoint en el backend)
 
@@ -288,5 +285,5 @@ lugar que conoce todas las implementaciones concretas y las conecta según
   ningún endpoint de lectura para ellas hoy.
 - Ningún cambio en `colflux-backend-ia` en esta fase — todo lo de esta fase
   consume su API pública tal como está hoy. La funcionalidad 9 (escritura
-  con trazabilidad de origen) queda lista del lado de `ia-functions` pero
-  bloqueada hasta que el backend agregue el endpoint/campo necesario.
+  con trazabilidad de origen) guarda por ahora en la base del asistente;
+  llevarla a la plataforma depende del ETL o de un endpoint con campo de origen.

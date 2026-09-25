@@ -66,8 +66,10 @@ def _ficha(fuente: str, primer_fragmento: str) -> dict[str, Any]:
 
 
 class ArchivosSubidosToolProvider(ToolProvider):
-    def __init__(self, store: VectorStore) -> None:
+    def __init__(self, store: VectorStore, depurador=None) -> None:
         self._store = store
+        # Retira del índice los archivos borrados del bucket antes de consultarlos.
+        self._depurador = depurador
 
     def list_tools(self) -> list[ToolSpec]:
         return [
@@ -107,6 +109,8 @@ class ArchivosSubidosToolProvider(ToolProvider):
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name != "consultar_archivos_subidos":
             return {"error": f"Herramienta desconocida: {name}"}
+        if self._depurador:
+            self._depurador.depurar()
         archivo = str(arguments.get("archivo") or "").strip()
         if archivo:
             return self._leer(archivo)

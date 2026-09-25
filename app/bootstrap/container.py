@@ -16,6 +16,7 @@ from app.adapters.llm.ollama import OllamaProvider
 from app.adapters.persistence.postgres_conversation_repo import PostgresConversationRepository
 from app.adapters.storage.lightsail_bucket import LightsailBucket
 from app.adapters.tools.archivos_subidos_tool_provider import ArchivosSubidosToolProvider
+from app.adapters.tools.mediciones_chat_tool_provider import MedicionesChatToolProvider
 from app.adapters.tools.mcp_tool_provider import McpToolProvider
 from app.adapters.tools.rag_tool_provider import RagToolProvider
 from app.adapters.vectorstore.pgvector_store import PgVectorStore
@@ -24,6 +25,8 @@ from app.config import parsed_mcp_servers, settings
 from app.domain.ports.llm_provider import LLMProvider
 from app.domain.services.agent_orchestrator import AgentOrchestrator
 from app.domain.services.carga_documentos import CargaDocumentos
+from app.domain.services.depuracion import DepuradorArchivos
+from app.domain.services.descargas import Descargas
 from app.domain.services.reglas_diccionario import ReglasDiccionario
 from app.domain.services.rag_service import RagService
 from app.domain.services.tool_registry import ToolRegistry
@@ -69,8 +72,11 @@ def get_rag_service() -> RagService:
 @lru_cache
 def get_tool_registry() -> ToolRegistry:
     providers = [
-        RagToolProvider(get_rag_service(), settings.retrieval_top_k, settings.retrieval_min_score),
-        ArchivosSubidosToolProvider(PgVectorStore()),
+        RagToolProvider(get_rag_service(), settings.retrieval_top_k, settings.retrieval_min_score,
+                        get_depurador()),
+        ArchivosSubidosToolProvider(PgVectorStore(), get_depurador()),
+        MedicionesChatToolProvider(BackendUserDirectory(settings.backend_api_base_url),
+                                   BackendDataModel(settings.backend_api_base_url)),
     ]
     for name, url in parsed_mcp_servers().items():
         try:
@@ -93,19 +99,35 @@ def get_orchestrator() -> AgentOrchestrator:
     return AgentOrchestrator(get_llm_provider(), get_tool_registry(),
                              get_conversation_repository(),
                              ToolRouter(get_embedding_provider()),
-                             ReglasDiccionario(PgVectorStore()))
+                             ReglasDiccionario(PgVectorStore()),
+                             get_descargas())
+
+
+@lru_cache
+def get_almacen() -> LightsailBucket | None:
+    if not settings.bucket_name:
+        return None
+    return LightsailBucket(
+        settings.bucket_name,
+        settings.bucket_region,
+        settings.bucket_access_key_id,
+        settings.bucket_secret_access_key,
+    )
+
+
+@lru_cache
+def get_depurador() -> DepuradorArchivos:
+    return DepuradorArchivos(PgVectorStore(), get_almacen())
+
+
+@lru_cache
+def get_descargas() -> Descargas:
+    return Descargas(get_almacen())
 
 
 @lru_cache
 def get_carga_documentos() -> CargaDocumentos:
-    almacen = None
-    if settings.bucket_name:
-        almacen = LightsailBucket(
-            settings.bucket_name,
-            settings.bucket_region,
-            settings.bucket_access_key_id,
-            settings.bucket_secret_access_key,
-        )
+    almacen = get_almacen()
     return CargaDocumentos(
         usuarios=BackendUserDirectory(settings.backend_api_base_url),
         almacen=almacen,

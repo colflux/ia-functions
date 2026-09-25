@@ -7,7 +7,7 @@ from app.api.schemas import (
     IngestResponse, LugarRequest,
 )
 from app.bootstrap.container import (
-    get_carga_documentos, get_conversation_repository, get_orchestrator, get_rag_service,
+    get_carga_documentos, get_conversation_repository, get_descargas, get_orchestrator, get_rag_service,
 )
 from app.domain.services.agent_orchestrator import HISTORY_MINUTES
 from app.domain.services.bienvenida import BIENVENIDA
@@ -123,13 +123,25 @@ def ver_imagen(archivo: str) -> dict:
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest) -> ChatResponse:
-    result = get_orchestrator().respond(payload.message, payload.usuario)
+    autorizacion = f"Token {payload.token}" if payload.token else None
+    result = get_orchestrator().respond(payload.message, payload.usuario, autorizacion)
     return ChatResponse(
         answer=result["answer"],
         sources=result["sources"],
         herramientas=result["tools_used"],
         pendiente_de_confirmacion=result["pending_confirmation"],
+        descargas=result.get("descargas", []),
     )
+
+
+@router.get("/descargas/excel")
+def descargar_excel(archivo: str) -> dict:
+    """Enlace temporal (1 hora) al Excel que preparó el chat. Abierto a cualquiera:
+    son datos que la plataforma ya muestra en el geoportal."""
+    url = get_descargas().enlace(archivo)
+    if not url:
+        raise HTTPException(status_code=404, detail="Ese archivo no existe o ya no está disponible.")
+    return {"url": url}
 
 
 @router.get("/chat/historial", response_model=HistorialResponse)

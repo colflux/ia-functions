@@ -76,6 +76,28 @@ def init_schema() -> None:
             "CREATE INDEX IF NOT EXISTS pending_confirmations_user_idx "
             "ON pending_confirmations (external_user_id, resolved, created_at)"
         )
+        # Mediciones dictadas en el chat. Quedan aquí, pendientes de validación,
+        # hasta que en el futuro pasen por el ETL de la plataforma.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mediciones_chat (
+                id SERIAL PRIMARY KEY,
+                sitio_id INTEGER,
+                sitio_nombre TEXT NOT NULL,
+                latitud DOUBLE PRECISION,
+                longitud DOUBLE PRECISION,
+                fecha DATE NOT NULL,
+                gas TEXT NOT NULL,
+                valor DOUBLE PRECISION NOT NULL,
+                unidad TEXT NOT NULL,
+                condicion_luz TEXT NOT NULL,
+                usuario_id TEXT,
+                usuario_nombre TEXT,
+                estado TEXT NOT NULL DEFAULT 'pendiente_etl',
+                creado TIMESTAMPTZ NOT NULL DEFAULT now()
+            )
+            """
+        )
 
 
 def _dimension_actual(conn) -> int | None:

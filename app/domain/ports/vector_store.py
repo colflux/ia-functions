@@ -39,6 +39,16 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def fuentes(self, prefijo_fuente: str) -> list[str]:
+        """Fuentes distintas que empiezan por `prefijo_fuente`."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def borrar_fuente(self, fuente: str) -> int:
+        """Borra todos los fragmentos de `fuente`; devuelve cuántos."""
+        raise NotImplementedError
+
+    @abstractmethod
     def pendientes_de_reindexar(self, limite: int) -> list[tuple[int, str]]:
         """Fragmentos cuyo vector está vacío — por ejemplo tras cambiar de
         modelo de embeddings. Devuelve pares (id, texto)."""

@@ -104,6 +104,19 @@ class PgVectorStore(VectorStore):
                 rows = cur.fetchall()
         return [RetrievedChunk(source=r[0], content=r[1], score=1.0) for r in rows]
 
+    def fuentes(self, prefijo_fuente: str) -> list[str]:
+        with get_connection() as conn:
+            filas = conn.execute(
+                "SELECT DISTINCT source FROM document_chunks WHERE source LIKE %s",
+                (f"{_literal(prefijo_fuente)}%",),
+            ).fetchall()
+        return [f[0] for f in filas]
+
+    def borrar_fuente(self, fuente: str) -> int:
+        with get_connection() as conn:
+            cur = conn.execute("DELETE FROM document_chunks WHERE source = %s", (fuente,))
+            return cur.rowcount
+
     def pendientes_de_reindexar(self, limite: int) -> list[tuple[int, str]]:
         with get_connection() as conn:
             with conn.cursor() as cur:

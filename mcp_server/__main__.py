@@ -6,10 +6,9 @@ from mcp_server.tools.datos import consultar_datos_campo
 from mcp_server.tools.mediciones_gei import consultar_mediciones
 from mcp_server.tools.sitios import listar_sitios
 
-# mcp_server/tools/mediciones_chat.py existe pero sus herramientas no se registran:
-# el backend todavía no expone los endpoints de escritura, así que siempre
-# respondían "no disponible" mientras sus descripciones ocupaban 287 tokens en
-# cada llamada al modelo.
+# Las mediciones dictadas en el chat no pasan por este servidor: las registra el
+# asistente en su propia base (app/adapters/tools/mediciones_chat_tool_provider.py)
+# hasta que el ETL de la plataforma pueda recibirlas.
 
 app = FastMCP("colflux-backend", port=MCP_PORT)
 
