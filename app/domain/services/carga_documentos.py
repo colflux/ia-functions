@@ -20,6 +20,11 @@ lista de preguntas para que la persona lo complete por el chat. Lo que responda
 llega como "complementos", se guarda junto al archivo y se indexa con él.
 Por ahora los datos quedan como texto consultable; más adelante deberán pasar
 por el ETL del backend para convertirse en mediciones.
+
+Los Excel y CSV de datos que superan MAX_CARACTERES (miles de filas, varias
+hojas) no se indexan enteros: se guarda el original y se indexa su revisión
+automática (perfil de cada hoja y hallazgos de calidad, ver perfil_datos.py),
+que también se le muestra a quien lo sube.
 """
 import hashlib
 import json
@@ -43,6 +48,7 @@ from app.domain.ports.user_directory import UserDirectory
 from app.domain.services.extraccion_texto import FormatoNoSoportado, extraer_texto
 from app.domain.services.gps_foto import coordenadas_de_foto
 from app.domain.services.lugar import Lugar, LugarInvalido, interpretar, sitio_mas_cercano
+from app.domain.services.perfil_datos import Perfil, es_tabular, perfilar
 from app.domain.services.rag_service import RagService
 from app.domain.services.validacion_datos import (
     ETIQUETAS_CATEGORIA, Requisito, ResultadoValidacion, ValidacionFallida, ValidadorDatos,
@@ -54,6 +60,7 @@ NIVELES = ["ciudadano", "investigador", "reportador", "admin"]
 NIVEL_MINIMO = "reportador"
 
 MAX_CARACTERES = 300_000   # más texto que esto tarda demasiado en indexarse
+MAX_HALLAZGOS_MENSAJE = 12  # los demás quedan en la revisión indexada
 MUESTRA_REVISION = 6_000   # lo que el modelo lee para decidir
 MAX_MB_IMAGEN = 15         # el modelo de visión recibe la imagen en base64
 PREFIJO_DOCUMENTOS = "documentos/"
@@ -234,6 +241,9 @@ class CargaDocumentos:
         if not descripcion.strip():
             raise ErrorDeCarga(422, "Antes de subir el archivo, cuéntame qué es y de qué trata.")
         lugar = self.revisar_lugar(lugar_texto)
+        if lugar.varios and not es_tabular(nombre):
+            raise ErrorDeCarga(422, "«Varios sitios» solo sirve para tablas de datos (Excel o CSV) que traen "
+                                    "la ubicación en cada fila. Para este archivo indica un solo lugar.")
         if len(contenido) > self.max_bytes:
             raise ErrorDeCarga(413, f"El archivo supera el máximo de {self.max_bytes // (1024 * 1024)} MB.")
 
@@ -245,10 +255,15 @@ class CargaDocumentos:
         mime_imagen = IMAGENES.get(Path(nombre).suffix.lower())
         gps_foto = coordenadas_de_foto(contenido) if mime_imagen else None
         observaciones: list[str] = []
+        perfil, para_revision = None, False
         if mime_imagen:
             veredicto, texto, observaciones = self._revisar_imagen(nombre, contenido, mime_imagen, descripcion)
         else:
-            texto = self._leer(nombre, contenido)
+            perfil = self._perfilar(nombre, contenido)
+            # Un Excel o CSV de datos demasiado grande para indexarlo entero se
+            # guarda con su revisión automática en lugar del texto completo.
+            para_revision = perfil is not None and perfil.caracteres > MAX_CARACTERES
+            texto = perfil.texto() if para_revision else self._leer(nombre, contenido)
             veredicto = self._revisar(nombre, texto, descripcion)
         logger.info("CARGA usuario=%s archivo=%r veredicto=%s", usuario.get("id"), nombre, veredicto)
         if not veredicto["relacionado"]:
@@ -264,7 +279,9 @@ class CargaDocumentos:
 
         tipo = veredicto["tipo"]
         etiqueta = ETIQUETAS[tipo]
-        if tipo == "datos":
+        if para_revision:
+            tipo, etiqueta = "datos", "datos para revisión (pendientes de pasar por el ETL)"
+        elif tipo == "datos":
             validacion = self._validar(texto, complementos, autorizacion)
             if validacion.categoria is None:
                 return ResultadoCarga(
@@ -327,7 +344,10 @@ class CargaDocumentos:
             mensaje += " " + " ".join(lugar.avisos)
         if relacion:
             mensaje += "\n\n" + relacion
-        mensaje += "\n\nYa puedes hacerme preguntas sobre su contenido."
+        if para_revision:
+            mensaje += "\n\n" + _resumen_revision(perfil)
+        else:
+            mensaje += "\n\nYa puedes hacerme preguntas sobre su contenido."
         return ResultadoCarga(True, mensaje, tipo, fragmentos, clave, lugar=lugar.resumen())
 
     def enlace_descarga(self, clave: str) -> str:
@@ -381,6 +401,17 @@ class CargaDocumentos:
             logger.exception("CARGA no se pudo consultar la huella %s", huella)
             raise ErrorDeCarga(502, "No se pudo revisar el archivo en este momento. Intenta de nuevo más tarde.")
         return registro
+
+    def _perfilar(self, nombre: str, contenido: bytes) -> Perfil | None:
+        """Perfil de un Excel o CSV; None si no es tabular o no se pudo leer
+        (entonces sigue el camino normal, que da el error adecuado)."""
+        if not es_tabular(nombre):
+            return None
+        try:
+            return perfilar(nombre, contenido)
+        except Exception:
+            logger.warning("CARGA no se pudo perfilar %r; se lee como texto", nombre, exc_info=True)
+            return None
 
     def _leer(self, nombre: str, contenido: bytes) -> str:
         try:
@@ -542,6 +573,23 @@ def _info(descripcion: str, complementos: list[str], ubicacion: list[str] | None
     if complementos:
         partes.append("Datos aportados al subirlo:\n" + "\n".join(complementos))
     return "\n".join(partes)
+
+
+def _resumen_revision(perfil: Perfil) -> str:
+    hojas = ", ".join(f"{h.nombre} ({len(h.filas)})" for h in perfil.hojas)
+    lineas = [f"Es un archivo grande ({perfil.total_filas} filas en {len(perfil.hojas)} hojas: {hojas}), "
+              "así que guardé el original y una revisión de cada hoja."]
+    hallazgos = perfil.hallazgos
+    if hallazgos:
+        lineas.append("Conviene revisar antes de cargarlo a la plataforma:")
+        lineas += [f"• {h}" for h in hallazgos[:MAX_HALLAZGOS_MENSAJE]]
+        if len(hallazgos) > MAX_HALLAZGOS_MENSAJE:
+            lineas.append(f"• y {len(hallazgos) - MAX_HALLAZGOS_MENSAJE} más; pregúntame por cada hoja.")
+    else:
+        lineas.append("No encontré problemas en la revisión automática.")
+    lineas.append("Todavía no son mediciones de la plataforma: deben pasar por el ETL. "
+                  "Puedes preguntarme por el contenido y la revisión de cada hoja.")
+    return "\n".join(lineas)
 
 
 def _pedir_faltantes(nombre: str, categoria: str, faltantes: list[Requisito]) -> str:

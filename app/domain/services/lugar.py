@@ -6,6 +6,8 @@ dirección):  «Ecosistema - vereda - municipio - departamento», por ejemplo
 coordenadas «4.9136, -73.7363».
 
 Se exige una de dos: coordenadas dentro de Colombia, o municipio y departamento.
+Un archivo de datos con filas de varios sitios puede indicar «varios sitios»: su
+ubicación está en las coordenadas de cada fila (solo se acepta para Excel y CSV).
 El departamento se compara con la lista oficial; el municipio y la vereda, con
 los que tienen sitios en la plataforma. Un municipio o una vereda que la
 plataforma no conoce se acepta con aviso: puede ser un lugar nuevo de muestreo.
@@ -33,7 +35,9 @@ LONGITUD = (-82.0, -66.8)
 
 EJEMPLO = ("Escríbelo así: «Ecosistema - vereda - municipio - departamento», por ejemplo "
            "«Páramo de Guerrero - vereda Monquetiva - Guatavita - Cundinamarca». "
-           "También sirven coordenadas, por ejemplo «4.9136, -73.7363».")
+           "También sirven coordenadas, por ejemplo «4.9136, -73.7363». Si es una tabla de datos "
+           "de varios sitios con sus coordenadas, escribe «varios sitios».")
+VARIOS = re.compile(r"^(varios|variossitios|variaszonas|variospuntos|variaslocalidades|variosparamos)$")
 
 
 def _bonito(texto: str) -> str:
@@ -58,8 +62,11 @@ class Lugar:
     longitud: float | None = None
     sitio_cercano: dict[str, Any] | None = None
     avisos: list[str] = field(default_factory=list)
+    varios: bool = False  # tabla con filas de varios sitios: cada fila trae su ubicación
 
     def resumen(self) -> str:
+        if self.varios:
+            return "varios sitios (según la ubicación de cada fila del archivo)"
         partes = [p for p in (self.ecosistema, self.vereda and f"vereda {self.vereda}",
                               self.municipio, self.departamento) if p]
         if self.latitud is not None:
@@ -118,6 +125,9 @@ def interpretar(texto: str, sitios: list[dict[str, Any]]) -> Lugar:
     if len(texto) < 4:
         raise LugarInvalido(f"Necesito saber de dónde es el archivo. {EJEMPLO}")
     lugar = Lugar(texto=texto)
+    if VARIOS.match(normalizar(texto)):
+        lugar.varios = True
+        return lugar
 
     coords = coordenadas(texto)
     resto = re.sub(r"-?\d{1,3}[.,]\d+", " ", texto) if coords else texto
