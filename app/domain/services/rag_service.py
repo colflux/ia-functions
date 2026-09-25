@@ -29,6 +29,9 @@ class RagService:
         matches = self._vector_store.search(query_embedding, top_k, collection)
         return [m for m in matches if m.score >= min_score]
 
+    def tiene_fuente(self, fuente: str) -> bool:
+        return fuente in self._vector_store.fuentes(fuente)
+
     def reindexar_pendientes(self, lote: int = 32) -> int:
         """Recalcula los vectores de los fragmentos que no tienen ninguno —
         por ejemplo después de cambiar de modelo de embeddings. El texto ya

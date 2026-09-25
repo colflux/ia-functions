@@ -43,6 +43,8 @@ class Settings(BaseSettings):
     bucket_region: str = "us-east-1"
     bucket_access_key_id: str = ""
     bucket_secret_access_key: str = ""
+    # Carpeta dentro del bucket para este entorno (p. ej. "lab/"); vacío en producción.
+    bucket_prefijo: str = ""
     max_upload_mb: int = 25
 
     # Modelo con visión que revisa las imágenes subidas (Gemini, con
