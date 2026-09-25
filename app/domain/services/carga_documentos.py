@@ -372,6 +372,11 @@ class CargaDocumentos:
             if not self._almacen.existe(clave):
                 logger.info("CARGA huella %s sin archivo (%s): se permite volver a subir", huella, clave)
                 return None
+            if not self._rag.tiene_fuente(clave):
+                # El original está, pero esta base no lo tiene indexado (por ejemplo lo
+                # subió otro entorno que comparte el bucket): para esta base es nuevo.
+                logger.info("CARGA huella %s sin fragmentos en esta base (%s): se permite subir", huella, clave)
+                return None
         except Exception:
             logger.exception("CARGA no se pudo consultar la huella %s", huella)
             raise ErrorDeCarga(502, "No se pudo revisar el archivo en este momento. Intenta de nuevo más tarde.")

@@ -32,6 +32,13 @@ HISTORY_MAX_CHARS = 6000
 # definición se entrega al modelo desde el principio (ver _consultar_diccionario).
 SIEMPRE_VISIBLES = {"listar_sitios"}
 HERRAMIENTA_DICCIONARIO = "buscar_diccionario"
+# Palabras de los títulos del diccionario que no identifican un término por sí solas.
+# Herramientas cuyos resultados se pueden descargar en Excel. Solo tras una de
+# ellas, con datos, el chat ofrece el Excel: dejarlo al modelo hacía que lo
+# ofreciera también tras una definición del diccionario o una lista de sitios.
+HERRAMIENTAS_EXPORTABLES = {"consultar_mediciones", "consultar_datos_campo", "consultar_mediciones_chat"}
+OFERTA_EXCEL = "¿Quieres descargar estos datos en Excel o agregar otros (otro gas, otras fechas u otros sitios)?"
+PALABRAS_GENERICAS = {"olor", "color", "agua", "suelo", "zona", "esta", "sigue", "igual", "noche", "entre"}
 PARECIDO_DICCIONARIO_PREVIO = 0.86
 MAX_TERMINOS_PREVIOS = 2
 
@@ -65,7 +72,9 @@ SYSTEM_PROMPT = (
     "No afirmes relaciones que los datos no muestran: si algo no se puede comprobar "
     "con los datos, dilo en una frase. Las interpretaciones de expresiones de campo "
     "salen del diccionario; si una no está, dilo y no agregues una interpretación "
-    "propia. Si el diccionario trae un término parecido pero no el mismo, di que el "
+    "propia. Si el diccionario trae la misma expresión con otras palabras (por ejemplo "
+    "«huele a huevo podrido» y «Olor a huevo podrido»), úsala como ese término. Si trae "
+    "un término distinto pero parecido, di que el "
     "término exacto no está y presenta el parecido con su propio nombre, sin mezclarlos. "
     "Menciona los archivos subidos solo si contienen el dato que se pidió. "
     "No ofrezcas datos, sitios ni consultas que las herramientas indican que no existen; "
@@ -73,11 +82,9 @@ SYSTEM_PROMPT = (
     "Si la persona dicta una medición que hizo («hoy medí…»), usa registrar_medicion y "
     "nunca digas que quedó guardada: se guarda solo cuando escribe «confirmo». Las "
     "mediciones dictadas en el chat se consultan con consultar_mediciones_chat. "
-    "Después de responder con mediciones o datos de campo, ofrece en una frase "
-    "descargarlos en Excel y pregunta si quiere agregar otros datos (otro gas, otras "
-    "fechas u otros sitios). Si acepta, llama de nuevo a las herramientas de esos datos "
-    "con exportar=true, una vez por cada conjunto pedido: todo queda en un solo Excel. "
-    "No ofrezcas Excel para listas de sitios ni cuando no hubo datos. "
+    "No ofrezcas descargas en Excel: el chat lo ofrece solo cuando hay datos. Si la "
+    "persona pide el Excel, llama de nuevo a las herramientas de esos datos con "
+    "exportar=true, una vez por cada conjunto pedido: todo queda en un solo Excel. "
     "Nunca conviertas valores entre unidades (nmol, umol, g): da cada valor en la "
     "unidad en que viene y compara solo dentro de una misma unidad. "
     "Si mencionan un nombre que puede ser un sitio, vereda o municipio, búscalo con "
@@ -134,6 +141,18 @@ def _texto_plano(texto: str) -> str:
     limpio = re.sub(r"^\s{0,3}#{1,6}\s+", "", limpio, flags=re.MULTILINE)
     return limpio
 
+def _sin_ofertas_excel(texto: str) -> str:
+    """Quita las frases que mencionan Excel (el modelo lo ofrecía donde no había datos)."""
+    if "excel" not in texto.lower():
+        return texto
+    lineas = []
+    for linea in texto.splitlines():  # línea por línea, para conservar los párrafos
+        frases = re.split(r"(?<=[.?!])\s+", linea)
+        lineas.append(" ".join(f for f in frases if "excel" not in f.lower()))
+    limpio = re.sub(r"\n{3,}", "\n\n", "\n".join(lineas)).strip()
+    return limpio or texto
+
+
 def _normalizar_termino(texto: str) -> str:
     """Minúsculas, sin tildes, comillas ni signos: «“El humedal está hirviendo”» → «el humedal esta hirviendo»."""
     base = unicodedata.normalize("NFKD", texto or "").encode("ascii", "ignore").decode().lower()
@@ -185,6 +204,8 @@ class AgentOrchestrator:
         pending: PendingConfirmation | None = None
         reply = None
         hojas_excel: list[dict] = []
+        hubo_datos = False
+        frase_diccionario: str | None = None
 
         todas = self._tools.list_tools()
         visibles = self._router.elegir(text, todas) if self._router else todas
@@ -222,8 +243,8 @@ class AgentOrchestrator:
                     sources.extend(result_sources)
                 # Si la pregunta ya es sobre una expresión del diccionario, esa es la
                 # relación que importa: no se añade otra por regla.
-                if HERRAMIENTA_DICCIONARIO not in tools_used:
-                    self._anotar_diccionario(call.name, call.arguments, result, sources)
+                if HERRAMIENTA_DICCIONARIO not in tools_used and not frase_diccionario:
+                    frase_diccionario = self._anotar_diccionario(call.name, call.arguments, result, sources)
 
                 proposal = result.pop("pending_confirmation", None)
                 herramienta_confirmar = result.pop("confirmar_con", None)
@@ -232,6 +253,8 @@ class AgentOrchestrator:
 
                 # Filas completas para el Excel: no pasan por el modelo (serían miles),
                 # se guardan aparte y el modelo solo sabe que quedaron incluidas.
+                if call.name in HERRAMIENTAS_EXPORTABLES and not (result.get("sin_datos") or result.get("error")):
+                    hubo_datos = True
                 exportar = result.pop("exportar", None)
                 if exportar:
                     hojas_excel.append(exportar)
@@ -258,6 +281,14 @@ class AgentOrchestrator:
         )
         answer = (reply.text if reply else "") or respaldo
         answer = _sin_tablas_ni_citas(_texto_plano(answer))
+        if frase_diccionario:
+            answer = f"{answer}\n\n{frase_diccionario}"
+        if not hojas_excel:
+            # La oferta del Excel la pone el código, no el modelo: se quitan las
+            # frases del modelo que lo mencionan y se agrega la oferta solo si hubo datos.
+            answer = _sin_ofertas_excel(answer)
+            if hubo_datos:
+                answer = f"{answer}\n\n{OFERTA_EXCEL}"
         unique_sources = self._dedupe_sources(sources)
         descargas = []
         if hojas_excel:
@@ -326,11 +357,23 @@ class AgentOrchestrator:
         # nombrar «páramo» no pide su definición.
         es_definicion = bool(re.search(r"\b(que (es|son|significa|quiere decir)|define|definicion|significado)\b", pregunta))
 
+        palabras = set(pregunta.split())
+
         def nombrado(fila: dict) -> bool:
-            # «¿qué es un páramo?» nombra el término «Páramo» tal cual, aunque el
-            # parecido por significado no llegue al umbral: también cuenta.
+            # La pregunta nombra el término aunque el parecido por significado no
+            # llegue al umbral. Una expresión de dos o más palabras propias («huela a
+            # huevo podrido» → «Olor a huevo podrido») cuenta en cualquier pregunta;
+            # una sola palabra («¿qué es un páramo?») solo en preguntas de definición,
+            # para que «mediciones del páramo de Guerrero» no traiga su definición.
             titulo = re.sub(r"^diccionario-\d+\s*", "", str(fila.get("source", "")))
-            return es_definicion and any(len(n) >= 5 and n in pregunta for n in map(_normalizar_termino, re.split(r"/", titulo)))
+            for parte in re.split(r"/", titulo):
+                propias = {p for p in _normalizar_termino(parte).split()
+                           if len(p) >= 4 and p not in PALABRAS_GENERICAS}
+                if not propias or not propias <= palabras:
+                    continue
+                if len(propias) >= 2 or es_definicion:
+                    return True
+            return False
 
         cercanos = lambda filas: [f for f in filas or []
                                   if f.get("score", 0) >= PARECIDO_DICCIONARIO_PREVIO or nombrado(f)][:MAX_TERMINOS_PREVIOS]
@@ -348,13 +391,15 @@ class AgentOrchestrator:
         sources.extend(cercanos(resultado.get("sources")))
         return True
 
-    def _anotar_diccionario(self, nombre: str, argumentos: dict, resultado: dict, sources: list[dict]) -> None:
+    def _anotar_diccionario(self, nombre: str, argumentos: dict, resultado: dict,
+                            sources: list[dict]) -> str | None:
         """Si el dato que devolvió la herramienta cumple una regla del diccionario
-        de campo (p. ej. CH4 ≥ 0.0735 µmol/m²/s → «olor a huevo podrido»), se le
-        añade al resultado para que el modelo lo mencione en una frase. La regla
-        la evalúa el código, no el modelo: así no inventa relaciones."""
+        de campo (p. ej. CH4 ≥ 0.0735 µmol/m²/s → «olor a huevo podrido»), devuelve
+        la frase que se agrega al final de la respuesta. La regla la evalúa el
+        código y la frase la pone el código: dejarla al modelo hacía que la
+        omitiera cuando la respuesta era larga."""
         if self._reglas is None or not isinstance(resultado, dict):
-            return
+            return None
         try:
             if nombre == "consultar_ultima_medicion" and (argumentos.get("categoria") or "flujos") == "flujos":
                 gas = str(argumentos.get("variable") or "")
@@ -365,26 +410,23 @@ class AgentOrchestrator:
                 candidatos = [(m.get("valor"), unidad, f"el valor más alto en {unidad}")
                               for unidad, m in (resultado.get("mayor_por_unidad") or {}).items()]
             else:
-                return
+                return None
             for valor, unidad, que in candidatos:
                 regla = self._reglas.evaluar(gas, unidad, valor)
                 if regla:
                     break
             else:
-                return
+                return None
         except Exception:
             logger.exception("REGLAS no se pudo evaluar el resultado de %s", nombre)
-            return
+            return None
         logger.info("REGLAS %s %s %s cumple «%s»", gas, valor, unidad, regla.termino)
-        resultado["diccionario_de_campo"] = {
-            "termino": regla.termino,
-            "dato": f"{que}: {valor} {unidad}",
-            "regla": f"{regla.nivel} si el flujo de {regla.gas} es al menos el umbral del diccionario",
-            "nota": ("Termina la respuesta con UNA frase breve: según el diccionario de campo, con "
-                     f"{que} ({valor} {unidad}) es posible observar «{regla.termino}» en ese lugar. "
-                     "No lo presentes como un hecho observado ni lo extiendas."),
-        }
+        resultado["diccionario_de_campo"] = (f"Con {que} se cumple la regla del término «{regla.termino}». "
+                                             "El chat agrega esa frase al final: no la repitas.")
         sources.append({"source": regla.fuente, "content": regla.contenido, "score": 1.0})
+        termino = re.sub(r"\s*/.*$", "", regla.termino).strip("“”\" ")
+        return (f"Según el diccionario de campo, con {que} ({valor:g} {unidad}) es posible observar "
+                f"«{termino}» en ese lugar.")
 
     def _encadenar(self, encadenadas: list[dict], disponibles: set[str], messages: list[Message],
                    tools_used: list[str], sources: list[dict]) -> None:

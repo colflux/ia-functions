@@ -12,8 +12,10 @@ logger = logging.getLogger(__name__)
 
 NOTA_DATOS = ("'sitios'/'total_sitios' son los sitios registrados; 'con_mediciones' son los que "
               "tienen mediciones de gases con valor (CO2, CH4, N2O). Si preguntan de qué sitios hay "
-              "datos, responde con 'con_mediciones' y no con el total de registrados. No menciones "
-              "tablas ni listas internas: nombra los sitios o di cuántos son.")
+              "datos, responde con 'con_mediciones' y no con el total de registrados. Los lugares "
+              "sin mediciones no aparecen en 'elige_uno_de': no los menciones salvo que pregunten "
+              "por sitios registrados. No menciones tablas ni listas internas, y no ofrezcas Excel "
+              "de una lista de sitios.")
 
 
 def _ids_con_mediciones() -> set | None:
@@ -57,6 +59,14 @@ def _con_datos(salida: dict, sitios: list[dict], con_datos: set | None) -> dict:
     if con_datos is not None:
         salida["total_con_mediciones"] = sum(1 for s in sitios if s.get("id") in con_datos)
         salida["nota_datos"] = NOTA_DATOS
+        grupos = salida.get("elige_uno_de")
+        if grupos:
+            # Un departamento o municipio sin ninguna medición no se ofrece: el
+            # modelo lo nombraba («y ninguno en Caldas») aunque no hubiera nada.
+            sin_datos = [g for g in grupos if not g.get("con_mediciones")]
+            if sin_datos and len(sin_datos) < len(grupos):
+                salida["elige_uno_de"] = [g for g in grupos if g.get("con_mediciones")]
+                salida["registrados_sin_mediciones"] = sum(g["sitios"] for g in sin_datos)
     return salida
 
 

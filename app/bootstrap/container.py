@@ -112,6 +112,7 @@ def get_almacen() -> LightsailBucket | None:
         settings.bucket_region,
         settings.bucket_access_key_id,
         settings.bucket_secret_access_key,
+        settings.bucket_prefijo,
     )
 
 
