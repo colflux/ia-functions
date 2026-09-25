@@ -20,6 +20,7 @@ from app.adapters.tools.mediciones_chat_tool_provider import MedicionesChatToolP
 from app.adapters.tools.mcp_tool_provider import McpToolProvider
 from app.adapters.tools.rag_tool_provider import RagToolProvider
 from app.adapters.vectorstore.pgvector_store import PgVectorStore
+from app.adapters.web.descarga_publica import descargar
 from app.adapters.vision.gemini_vision import GeminiVision
 from app.config import parsed_mcp_servers, settings
 from app.domain.ports.llm_provider import LLMProvider
@@ -32,6 +33,7 @@ from app.domain.services.rag_service import RagService
 from app.domain.services.tool_registry import ToolRegistry
 from app.domain.services.tool_router import ToolRouter
 from app.domain.services.validacion_datos import ValidadorDatos
+from app.domain.services.wiki import SincronizadorWiki
 
 
 PROVEEDORES_LLM = {
@@ -73,7 +75,7 @@ def get_rag_service() -> RagService:
 def get_tool_registry() -> ToolRegistry:
     providers = [
         RagToolProvider(get_rag_service(), settings.retrieval_top_k, settings.retrieval_min_score,
-                        get_depurador()),
+                        get_depurador(), get_wiki()),
         ArchivosSubidosToolProvider(PgVectorStore(), get_depurador()),
         MedicionesChatToolProvider(BackendUserDirectory(settings.backend_api_base_url),
                                    BackendDataModel(settings.backend_api_base_url)),
@@ -119,6 +121,14 @@ def get_almacen() -> LightsailBucket | None:
 @lru_cache
 def get_depurador() -> DepuradorArchivos:
     return DepuradorArchivos(PgVectorStore(), get_almacen())
+
+
+@lru_cache
+def get_wiki() -> SincronizadorWiki | None:
+    if not settings.wiki_url:
+        return None
+    return SincronizadorWiki(get_rag_service(), PgVectorStore(), settings.wiki_url, descargar,
+                             settings.wiki_intervalo_horas * 3600)
 
 
 @lru_cache

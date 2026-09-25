@@ -49,6 +49,17 @@ class VectorStore(ABC):
         raise NotImplementedError
 
     @abstractmethod
+    def fragmentos(self, fuente: str) -> list[str]:
+        """Texto de los fragmentos de `fuente`, en el orden en que se guardaron."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def reemplazar(self, fuente: str, chunks: list[str], embeddings: list[list[float]], collection: str) -> int:
+        """Borra los fragmentos de `fuente` y escribe los nuevos en una sola
+        transacción: nunca queda la fuente a medias. Devuelve cuántos escribió."""
+        raise NotImplementedError
+
+    @abstractmethod
     def pendientes_de_reindexar(self, limite: int) -> list[tuple[int, str]]:
         """Fragmentos cuyo vector está vacío — por ejemplo tras cambiar de
         modelo de embeddings. Devuelve pares (id, texto)."""
