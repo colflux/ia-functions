@@ -18,6 +18,7 @@ from app.domain.models import Message, PendingConfirmation, ToolCall
 from app.domain.ports.conversation_repository import ConversationRepository
 from app.domain.ports.llm_provider import LLMProvider
 from app.domain.services.bienvenida import respuesta_fija
+from app.domain.services.contexto import autorizacion_actual
 from app.domain.services.tool_registry import ToolRegistry
 
 logger = logging.getLogger("uvicorn.error")
@@ -67,6 +68,16 @@ SYSTEM_PROMPT = (
     "propia. Si el diccionario trae un término parecido pero no el mismo, di que el "
     "término exacto no está y presenta el parecido con su propio nombre, sin mezclarlos. "
     "Menciona los archivos subidos solo si contienen el dato que se pidió. "
+    "No ofrezcas datos, sitios ni consultas que las herramientas indican que no existen; "
+    "si un sitio está registrado pero sin mediciones, dilo así. "
+    "Si la persona dicta una medición que hizo («hoy medí…»), usa registrar_medicion y "
+    "nunca digas que quedó guardada: se guarda solo cuando escribe «confirmo». Las "
+    "mediciones dictadas en el chat se consultan con consultar_mediciones_chat. "
+    "Después de responder con mediciones o datos de campo, ofrece en una frase "
+    "descargarlos en Excel y pregunta si quiere agregar otros datos (otro gas, otras "
+    "fechas u otros sitios). Si acepta, llama de nuevo a las herramientas de esos datos "
+    "con exportar=true, una vez por cada conjunto pedido: todo queda en un solo Excel. "
+    "No ofrezcas Excel para listas de sitios ni cuando no hubo datos. "
     "Nunca conviertas valores entre unidades (nmol, umol, g): da cada valor en la "
     "unidad en que viene y compara solo dentro de una misma unidad. "
     "Si mencionan un nombre que puede ser un sitio, vereda o municipio, búscalo con "
@@ -137,14 +148,25 @@ class AgentOrchestrator:
         conversations: ConversationRepository,
         router=None,
         reglas=None,
+        descargas=None,
     ) -> None:
         self._llm = llm
         self._tools = tools
         self._conversations = conversations
         self._router = router
         self._reglas = reglas
+        self._descargas = descargas
 
-    def respond(self, question: str, external_user_id: str) -> dict:
+    def respond(self, question: str, external_user_id: str, autorizacion: str | None = None) -> dict:
+        # La sesión la leen las herramientas que escriben (registrar mediciones);
+        # el modelo no la ve.
+        marca = autorizacion_actual.set(autorizacion)
+        try:
+            return self._responder(question, external_user_id)
+        finally:
+            autorizacion_actual.reset(marca)
+
+    def _responder(self, question: str, external_user_id: str) -> dict:
         text = (question or "").strip()
 
         if text.lower().rstrip(".!") in CONFIRMATIONS:
@@ -162,6 +184,7 @@ class AgentOrchestrator:
         sources: list[dict] = []
         pending: PendingConfirmation | None = None
         reply = None
+        hojas_excel: list[dict] = []
 
         todas = self._tools.list_tools()
         visibles = self._router.elegir(text, todas) if self._router else todas
@@ -203,8 +226,18 @@ class AgentOrchestrator:
                     self._anotar_diccionario(call.name, call.arguments, result, sources)
 
                 proposal = result.pop("pending_confirmation", None)
-                if proposal:
-                    pending = PendingConfirmation(id="", tool_name="confirmar_medicion", arguments=proposal)
+                herramienta_confirmar = result.pop("confirmar_con", None)
+                if proposal and herramienta_confirmar:
+                    pending = PendingConfirmation(id="", tool_name=herramienta_confirmar, arguments=proposal)
+
+                # Filas completas para el Excel: no pasan por el modelo (serían miles),
+                # se guardan aparte y el modelo solo sabe que quedaron incluidas.
+                exportar = result.pop("exportar", None)
+                if exportar:
+                    hojas_excel.append(exportar)
+                    result["excel"] = (f"Incluido en el Excel: hoja «{exportar.get('titulo')}» con "
+                                       f"{len(exportar.get('filas') or [])} filas. El botón de descarga aparece "
+                                       "debajo de tu respuesta; no pegues las filas en el texto.")
 
                 messages.append(
                     Message(
@@ -226,6 +259,17 @@ class AgentOrchestrator:
         answer = (reply.text if reply else "") or respaldo
         answer = _sin_tablas_ni_citas(_texto_plano(answer))
         unique_sources = self._dedupe_sources(sources)
+        descargas = []
+        if hojas_excel:
+            try:
+                excel = self._descargas.guardar(hojas_excel) if self._descargas else None
+            except Exception:
+                logger.exception("EXCEL no se pudo generar")
+                excel = None
+            if excel:
+                descargas.append(excel)
+            else:
+                answer += "\n\nNo se pudo preparar el Excel en este momento; intenta de nuevo más tarde."
 
         if pending:
             self._conversations.save_turn(external_user_id, text, answer, tools_used, pending)
@@ -237,6 +281,7 @@ class AgentOrchestrator:
             "sources": unique_sources,
             "tools_used": list(dict.fromkeys(tools_used)),
             "pending_confirmation": pending.arguments if pending else None,
+            "descargas": descargas,
         }
 
     def _resolve_confirmation(self, external_user_id: str) -> dict:
@@ -246,14 +291,11 @@ class AgentOrchestrator:
             self._conversations.save_turn(external_user_id, "confirmo", answer, [], None)
             return {"answer": answer, "sources": [], "tools_used": [], "pending_confirmation": None}
 
-        if pending.tool_name not in {t.name for t in self._tools.list_tools()}:
-            # Las herramientas de escritura no se registran mientras el backend no
-            # exponga sus endpoints, así que una propuesta guardada antes de eso no
-            # se puede completar. Sin esto, el registro devolvía su error interno
-            # y el usuario lo leía como si fuera la respuesta.
-            answer = ("Esa propuesta necesita una herramienta de escritura que todavía "
-                      "no está disponible, porque el backend no expone sus endpoints. "
-                      "No se guardó nada.")
+        if not self._tools.tiene(pending.tool_name):
+            # Una propuesta guardada con una herramienta que ya no existe no se puede
+            # completar; sin esto, el registro devolvía su error interno y la
+            # persona lo leía como si fuera la respuesta.
+            answer = "Esa propuesta ya no se puede completar. No se guardó nada."
             self._conversations.resolve_pending(pending.id)
             self._conversations.save_turn(external_user_id, "confirmo", answer, [], None)
             return {"answer": answer, "sources": [], "tools_used": [], "pending_confirmation": None}

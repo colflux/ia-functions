@@ -140,7 +140,8 @@ def sitios_cerca(latitud: float, longitud: float, limite: int = 5) -> list[dict]
             continue
         dy = (item["latitud"] - latitud) * 111.0
         dx = (item["longitud"] - longitud) * 111.0 * cos_lat
-        salida.append(dict(item, distancia_km=round(math.hypot(dx, dy), 2)))
+        # Cuatro decimales (0,1 m): con dos, 16 m y 6 m quedaban iguales.
+        salida.append(dict(item, distancia_km=round(math.hypot(dx, dy), 4)))
     salida.sort(key=lambda x: x["distancia_km"])
     return salida[:limite]
 

@@ -47,13 +47,14 @@ def _estadisticas(filas: list[dict]) -> dict:
     }
 
 def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str | int = "",
-                          fecha: str = "", limite: int = 5) -> dict:
+                          fecha: str = "", limite: int = 5, exportar: bool = False) -> dict:
     """Registros de materia orgánica muerta (tipo mom) o de variables
     ambientales (tipo clima: temperatura del suelo y del aire, presión, humedad,
     punto de rocío y nivel de agua). Se acota por sitio, dando su nombre o su
     número, y por fecha: 2021, 2021-10 o 2021-10-05. No admite rangos de fechas
     ni filtro por vereda, municipio o departamento. Úsala cuando pregunten por
-    hojarasca, restos vegetales o condiciones ambientales."""
+    hojarasca, restos vegetales o condiciones ambientales. Con exportar=true
+    entrega además todas las filas para el Excel."""
     sitio = str(sitio).strip() if sitio is not None else ""  # el modelo a veces lo manda como número
     clave = (tipo or "").strip().lower()
     if clave not in VISTAS:
@@ -183,7 +184,7 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str | int = "",
         nota = ("Hay " + str(total) + " registros, demasiados para resumirlos aquí. "
                 "Acota por sitio o por fecha si necesitas promedios.")
 
-    return {
+    salida = {
         "tipo": clave,
         "descripcion": VISTAS[clave],
         "proyecto": proyecto_obj["nombre"],
@@ -194,3 +195,10 @@ def consultar_datos_campo(tipo: str, proyecto: str = "", sitio: str | int = "",
         "nota": nota,
         "filas_de_ejemplo": filas,
     }
+    if exportar:
+        todas = [f for g in por_sitio for f in g]
+        salida["exportar"] = {"titulo": f"{clave} {descripcion_sitio}"[:60], "filas": todas}
+        if total > len(todas):
+            salida["aviso_excel"] = (f"El Excel lleva {len(todas)} de {total} registros; para el resto, "
+                                     "acota por sitio o por fecha.")
+    return salida

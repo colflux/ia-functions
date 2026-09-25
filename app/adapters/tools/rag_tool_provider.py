@@ -17,10 +17,11 @@ MAX_PALABRAS_LISTADO = 3
 
 
 class RagToolProvider(ToolProvider):
-    def __init__(self, rag_service: RagService, top_k: int, min_score: float) -> None:
+    def __init__(self, rag_service: RagService, top_k: int, min_score: float, depurador=None) -> None:
         self._rag = rag_service
         self._top_k = top_k
         self._min_score = min_score
+        self._depurador = depurador  # retira archivos borrados del bucket antes de buscar
 
     def list_tools(self) -> list[ToolSpec]:
         return [
@@ -58,6 +59,8 @@ class RagToolProvider(ToolProvider):
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         texto = (arguments.get("texto") or "").strip()
         if name == "buscar_documentos":
+            if self._depurador:
+                self._depurador.depurar()
             resultado = self._search(texto, collection="documents")
             if len(texto.split()) <= MAX_PALABRAS_LISTADO:
                 # Buscar "entrevistas" suele ser preguntar qué hay, y la búsqueda por

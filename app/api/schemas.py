@@ -36,6 +36,9 @@ class LugarRequest(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     usuario: str = "anonimo"
+    # Token de sesión del backend. Solo lo usan las herramientas que escriben
+    # (registrar mediciones), que verifican el nivel con el backend.
+    token: str | None = None
 
 
 class Source(BaseModel):
@@ -49,6 +52,8 @@ class ChatResponse(BaseModel):
     sources: list[Source]
     herramientas: list[str] = []
     pendiente_de_confirmacion: dict[str, Any] | None = None
+    # Excel preparado en esta respuesta: [{"archivo", "nombre", "filas", "hojas"}]
+    descargas: list[dict[str, Any]] = []
 
 
 class HistorialMessage(BaseModel):
