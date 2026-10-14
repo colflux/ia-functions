@@ -49,10 +49,16 @@ services:
       TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN:-}
       TELEGRAM_MENSAJES_POR_HORA: ${TELEGRAM_MENSAJES_POR_HORA:-20}
       ASISTENTE_URL: http://api:8000
+      # Grupos de observación: sin GRUPOS_TOKEN no se registran grupos.
+      GRUPOS_TOKEN: ${GRUPOS_TOKEN:-}
+      WHISPER_MODELO: ${WHISPER_MODELO:-small}
+      WHISPER_HILOS: ${WHISPER_HILOS:-2}
+      WHISPER_CARPETA: /modelos
     depends_on:
       - api
     volumes:
       - ./telegram_bot:/app/telegram_bot
+      - whisper_modelos:/modelos
 
   db:
     image: pgvector/pgvector:pg16
@@ -84,5 +90,6 @@ services:
       - ollama_data:/root/.ollama
 
 volumes:
+  whisper_modelos:
   db_data:
   ollama_data:

@@ -15,3 +15,5 @@ python-docx==1.1.2
 openpyxl==3.1.5
 boto3==1.35.36
 Pillow>=10
+# Transcripción local de audios de los grupos de Telegram
+faster-whisper==1.2.1

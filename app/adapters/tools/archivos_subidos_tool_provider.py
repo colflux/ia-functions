@@ -20,6 +20,8 @@ from app.domain.ports.vector_store import VectorStore
 from app.domain.services.carga_documentos import PREFIJO_DOCUMENTOS, nombre_visible
 
 MAX_ARCHIVOS = 20
+# Al listar lo subido se consultan también las fotos de los grupos de observación.
+GRUPOS = {"herramienta": "consultar_observaciones_grupo", "argumentos": {}}
 MAX_FRAGMENTOS = 30
 MAX_FRAGMENTOS_ARCHIVO = 12
 MAX_LINEAS_POR_ARCHIVO = 40
@@ -124,7 +126,8 @@ class ArchivosSubidosToolProvider(ToolProvider):
     def _listar(self, con_comienzo: bool = True) -> dict[str, Any]:
         primeros = self._store.primeros_fragmentos(PREFIJO_DOCUMENTOS, MAX_ARCHIVOS)
         if not primeros:
-            return {"archivos": [], "mensaje": "Todavía no se ha subido ningún archivo desde el chat."}
+            return {"archivos": [], "mensaje": "Todavía no se ha subido ningún archivo desde el chat.",
+                    "consultar_tambien": GRUPOS}
         archivos = [_ficha(f.source, f.content) for f in primeros]
         if con_comienzo:
             for archivo, f in zip(archivos, primeros):
@@ -134,7 +137,10 @@ class ArchivosSubidosToolProvider(ToolProvider):
             "archivos": archivos,
             "nota": ("Estos son todos los archivos subidos desde el chat, con su contenido "
                      "completo: para leer uno, pasa su nombre en 'archivo'."),
-            "sources": sources,
+            # Solo si se pidió la lista: la consulta de paso no debe mostrar archivos.
+            **({"sources": sources} if con_comienzo else {}),
+            # Las fotos de los grupos de Telegram no están en este índice: se consultan aparte.
+            **({"consultar_tambien": GRUPOS} if con_comienzo else {}),
         }
 
     def _leer(self, archivo: str) -> dict[str, Any]:
