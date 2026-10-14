@@ -12,6 +12,7 @@ from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
 from telegram_bot.asistente import Asistente
+from telegram_bot.registro_grupos import RegistroGrupos
 from telegram_bot.telegram import Telegram
 
 logger = logging.getLogger("telegram_bot")
@@ -56,8 +57,10 @@ class LimitePorPersona:
 
 
 class Bot:
-    def __init__(self, telegram: Telegram, asistente: Asistente, mensajes_por_hora: int) -> None:
+    def __init__(self, telegram: Telegram, asistente: Asistente, mensajes_por_hora: int,
+                 grupos: RegistroGrupos | None = None) -> None:
         self._tg = telegram
+        self._grupos = grupos
         self._asistente = asistente
         self._limite = LimitePorPersona(mensajes_por_hora)
         self._mensajes_por_hora = mensajes_por_hora
@@ -67,6 +70,8 @@ class Bot:
     def correr(self) -> None:
         self._nombre = "@" + self._tg.yo()["username"]
         logger.info("Bot %s escuchando", self._nombre)
+        if self._grupos:
+            self._grupos.iniciar()
         desde = None
         with ThreadPoolExecutor(HILOS) as hilos:
             while True:
@@ -94,6 +99,20 @@ class Bot:
         persona = (mensaje.get("from") or {}).get("id", chat)
         privado = mensaje["chat"].get("type") == "private"
         texto = (mensaje.get("text") or "").strip()
+
+        if not privado and self._grupos:
+            orden, _, argumento = texto.partition(" ")
+            if orden.startswith("/") and self._grupos.comando(mensaje, orden.split("@")[0].lower(), argumento):
+                return
+            if not orden.startswith("/") and self._grupos.activo(chat):
+                # Grupo de observación: se guarda todo, en silencio.
+                respondido = (mensaje.get("reply_to_message") or {}).get("from", {}).get("username")
+                al_bot = (self._nombre.lower() in texto.lower()
+                          or f"@{respondido}".lower() == self._nombre.lower())
+                try:
+                    self._grupos.guardar(mensaje, al_bot)
+                except Exception:
+                    logger.exception("No se pudo guardar el mensaje %s del grupo %s", mensaje["message_id"], chat)
 
         if not privado:
             # En grupos solo se responde si lo mencionan o le contestan al bot.

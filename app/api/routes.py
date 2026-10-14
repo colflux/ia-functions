@@ -148,3 +148,9 @@ def descargar_excel(archivo: str) -> dict:
 def historial(usuario: str, limite: int = 40) -> HistorialResponse:
     messages = get_conversation_repository().recent_messages(usuario, min(limite, 100), HISTORY_MINUTES)
     return HistorialResponse(messages=[{"role": m.role, "content": m.text} for m in messages])
+
+
+# Rutas internas del bot de Telegram para los grupos de observación.
+from app.api.grupos import router as grupos_router  # noqa: E402
+
+router.include_router(grupos_router)

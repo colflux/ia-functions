@@ -17,6 +17,8 @@ from app.adapters.persistence.postgres_conversation_repo import PostgresConversa
 from app.adapters.storage.lightsail_bucket import LightsailBucket
 from app.adapters.tools.archivos_subidos_tool_provider import ArchivosSubidosToolProvider
 from app.adapters.tools.mediciones_chat_tool_provider import MedicionesChatToolProvider
+from app.adapters.tools.observaciones_grupo_tool_provider import ObservacionesGrupoToolProvider
+from app.domain.services.observaciones_grupo import ObservacionesGrupo
 from app.adapters.tools.mcp_tool_provider import McpToolProvider
 from app.adapters.tools.rag_tool_provider import RagToolProvider
 from app.adapters.vectorstore.pgvector_store import PgVectorStore
@@ -79,6 +81,7 @@ def get_tool_registry() -> ToolRegistry:
         ArchivosSubidosToolProvider(PgVectorStore(), get_depurador()),
         MedicionesChatToolProvider(BackendUserDirectory(settings.backend_api_base_url),
                                    BackendDataModel(settings.backend_api_base_url)),
+        ObservacionesGrupoToolProvider(get_observaciones_grupo()),
     ]
     for name, url in parsed_mcp_servers().items():
         try:
@@ -129,6 +132,11 @@ def get_wiki() -> SincronizadorWiki | None:
         return None
     return SincronizadorWiki(get_rag_service(), PgVectorStore(), settings.wiki_url, descargar,
                              settings.wiki_intervalo_horas * 3600)
+
+
+@lru_cache
+def get_observaciones_grupo() -> ObservacionesGrupo:
+    return ObservacionesGrupo()
 
 
 @lru_cache

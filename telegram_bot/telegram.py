@@ -9,6 +9,7 @@ MAX_TEXTO = 4096
 class Telegram:
     def __init__(self, token: str) -> None:
         self._base = f"{API}/bot{token}"
+        self._archivos = f"{API}/file/bot{token}"
         self._http = httpx.Client(timeout=ESPERA_LARGA + 10)
 
     def _llamar(self, metodo: str, **kwargs) -> dict | list | bool:
@@ -39,6 +40,19 @@ class Telegram:
     def enviar_archivo(self, chat_id: int, nombre: str, contenido: bytes, leyenda: str) -> None:
         self._llamar("sendDocument", data={"chat_id": chat_id, "caption": leyenda},
                      files={"document": (nombre, contenido)})
+
+
+    def descargar(self, file_id: str) -> bytes:
+        """Descarga un archivo que llegó en un mensaje (foto, audio). Telegram
+        solo deja a los bots descargar archivos de hasta 20 MB."""
+        ruta = self._llamar("getFile", json={"file_id": file_id})["file_path"]
+        respuesta = self._http.get(f"{self._archivos}/{ruta}")
+        respuesta.raise_for_status()
+        return respuesta.content
+
+    def es_admin(self, chat_id: int, persona: int) -> bool:
+        miembro = self._llamar("getChatMember", json={"chat_id": chat_id, "user_id": persona})
+        return miembro.get("status") in ("creator", "administrator")
 
 
 def partir(texto: str, limite: int) -> list[str]:

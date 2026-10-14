@@ -1,0 +1,290 @@
+# Glosario de campo para Whisper (transcripción de audios de los grupos).
+# Una palabra o expresión por línea. Las marcadas con * van SIEMPRE en el
+# contexto que recibe Whisper (caben unas 60); las demás se usan en la segunda
+# pasada, cuando la transcripción tiene una palabra parecida a una de ellas
+# (p. ej. «turbeira» → se vuelve a transcribir sugiriendo «turbera»).
+# Se puede editar en el servidor y reiniciar el bot; no hay que reconstruir.
+# Fuentes: diccionario de términos de COLFLUX (v2), zonas del proyecto y
+# palabras comunes con que la gente describe estos paisajes.
+
+# ── Proyecto ──────────────────────────────────────────────
+* COLFLUX
+* Paramox
+IDEAM
+SWAMP
+carbono
+* metano
+dióxido de carbono
+gases de efecto invernadero
+emisiones
+flujo
+sumidero
+cámara
+parcela
+transecto
+biomasa
+materia orgánica
+georreferenciación
+
+# ── Ecosistemas y lugares ─────────────────────────────────
+* páramo
+* subpáramo
+* superpáramo
+* humedal
+* turbera
+* turba
+* ciénaga
+* pantano
+pantanoso
+chucua
+* sabana inundable
+sabana
+llano
+llanura
+estero
+bajo
+bajío
+banco
+zural
+surales
+* morichal
+* moriche
+palma de moriche
+canangucha
+* caño
+* laguna
+lagunita
+* quebrada
+nacimiento
+ojo de agua
+chorrera
+cascada
+río
+cauce
+vega
+várzea
+rebalse
+rebalsero
+cuenca hídrica
+bosque de galería
+bosque altoandino
+monte
+selva
+rastrojo
+potrero
+chagra
+maloca
+conuco
+vereda
+finca
+
+# ── Departamentos y regiones del proyecto ─────────────────
+Cundinamarca
+Boyacá
+Caldas
+Casanare
+Guaviare
+Guainía
+Amazonas
+Putumayo
+Orinoquía
+Llanos Orientales
+La Chorrera
+
+# ── Plantas ───────────────────────────────────────────────
+* frailejones
+frailejón
+frailejonal
+espeletia
+* musgo
+* esfagno
+sphagnum
+líquenes
+chusque
+chusquea
+chuscal
+* pajonal
+paja
+cojines
+plantas en cojín
+puya
+achupalla
+encenillo
+colorado
+romero de páramo
+árnica
+helechos
+* juncos
+totora
+eneas
+buchón
+lenteja de agua
+macrófitas
+gramíneas
+* pastos
+* arbustos
+* árboles
+matorral
+palma
+asaí
+mirití
+* hojarasca
+hojas secas
+raíces
+troncos
+vegetación
+
+# ── Agua ──────────────────────────────────────────────────
+* charco
+charcos
+* encharcado
+* inundado
+inundación
+anegado
+empantanado
+lodazal
+* barro
+barrial
+fango
+* lodo
+lodo negro
+agua estancada
+agua quieta
+agua corriendo
+* burbujas
+* burbujeando
+hervidero
+el humedal está hirviendo
+ebullición
+espuma
+nata
+* agua color té
+agua café
+agua negra
+agua turbia
+agua cristalina
+nivel del agua
+crecida
+creciente
+sequía
+verano
+invierno
+aguacero
+* llovizna
+lluvia
+garúa
+paramando
+sereno
+rocío
+escarcha
+helada
+granizo
+
+# ── Suelo ─────────────────────────────────────────────────
+* esponjoso
+suelo esponjoso
+el suelo se hunde
+blando
+firme
+duro
+agrietado
+cuarteado
+polvoriento
+tierra negra
+suelo negro
+rojizo
+arenoso
+arcilloso
+pedregoso
+mantillo
+capote
+
+# ── Clima y sensaciones ───────────────────────────────────
+* neblina
+niebla
+nubes
+* nublado
+encapotado
+* despejado
+* soleado
+resolana
+sol picante
+* bochorno
+aire pesado
+calor
+* caluroso
+* húmedo
+* seco
+* frío
+frío de páramo
+helado
+* viento
+ventoso
+ventarrón
+brisa
+vientos alisios
+temperatura
+humedad relativa
+punto de rocío
+evaporación
+transpiración
+
+# ── Olores ────────────────────────────────────────────────
+* olor a pantano
+* huevo podrido
+azufre
+podrido
+* tierra mojada
+olor a humedad
+olor a monte
+olor a quemado
+
+# ── Colores ───────────────────────────────────────────────
+* verdes
+verde intenso
+* amarillos
+amarillento
+* café
+pardo
+marrón
+ocre
+grisáceo
+plateado
+dorado
+
+# ── Animales ──────────────────────────────────────────────
+* ranas
+sapos
+aves
+pájaros
+* garzas
+patos
+* chigüiros
+babillas
+* zancudos
+mosquitos
+venado
+oso de anteojos
+cóndor
+colibrí
+peces
+lombrices
+
+# ── Uso y alteración ──────────────────────────────────────
+quema
+quemado
+ceniza
+ganado
+vacas
+pisoteo
+huellas
+cultivos
+papa
+drenaje
+zanja
+canal
+
+# ── Frases de campo (diccionario COLFLUX) ─────────────────
+el suelo está respirando
+la zona está viva
+la zona está apagada

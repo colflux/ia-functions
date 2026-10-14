@@ -55,6 +55,13 @@ class Settings(BaseSettings):
     wiki_url: str = "https://colflux.github.io/context/"
     wiki_intervalo_horas: int = 24
 
+    # Grupos de observación de Telegram: token compartido con el servicio
+    # telegram para las rutas internas /grupos. Vacío = desactivado.
+    grupos_token: str = ""
+    # Días que se guardan los audios de los grupos antes de borrarlos (la
+    # transcripción se queda).
+    grupos_dias_audio: int = 5
+
     class Config:
         env_file = ".env"
 
