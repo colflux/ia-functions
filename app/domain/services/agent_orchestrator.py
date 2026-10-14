@@ -36,8 +36,26 @@ HERRAMIENTA_DICCIONARIO = "buscar_diccionario"
 # Herramientas cuyos resultados se pueden descargar en Excel. Solo tras una de
 # ellas, con datos, el chat ofrece el Excel: dejarlo al modelo hacía que lo
 # ofreciera también tras una definición del diccionario o una lista de sitios.
-HERRAMIENTAS_EXPORTABLES = {"consultar_mediciones", "consultar_datos_campo", "consultar_mediciones_chat"}
+HERRAMIENTAS_EXPORTABLES = {"consultar_mediciones", "consultar_datos_campo", "consultar_mediciones_chat",
+                            "consultar_observaciones_grupo"}
 OFERTA_EXCEL = "¿Quieres descargar estos datos en Excel o agregar otros (otro gas, otras fechas u otros sitios)?"
+AVISO_EXCEL = ("\n\n(La persona acepta la oferta del Excel: vuelve a llamar a las herramientas de los "
+               "datos de tu respuesta anterior con exportar=true.)")
+_AFIRMA = {"si", "dale", "ok", "okay", "claro", "bueno", "listo", "porfa", "va", "vale", "excel", "quiero", "hagale"}
+
+
+def _acepta_excel(texto: str, historial: list) -> bool:
+    """Respuesta corta y afirmativa justo después de que el chat ofreció el Excel."""
+    def campo(m, nombre):
+        return (m.get(nombre) if isinstance(m, dict) else getattr(m, nombre, None)) or ""
+    previo = next((m for m in reversed(historial or []) if campo(m, "role") == "assistant" and campo(m, "text")), None)
+    if previo is None or OFERTA_EXCEL not in campo(previo, "text"):
+        return False
+    plano = unicodedata.normalize("NFKD", texto.lower()).encode("ascii", "ignore").decode()
+    palabras = re.findall(r"[a-z]+", plano)
+    if not palabras or len(palabras) > 6 or palabras[0] == "no":
+        return False
+    return bool(_AFIRMA.intersection(palabras)) or any(p.startswith(("descarg", "baj", "export")) for p in palabras)
 PALABRAS_GENERICAS = {"olor", "color", "agua", "suelo", "zona", "esta", "sigue", "igual", "noche", "entre"}
 PARECIDO_DICCIONARIO_PREVIO = 0.86
 MAX_TERMINOS_PREVIOS = 2
@@ -82,6 +100,10 @@ SYSTEM_PROMPT = (
     "Si la persona dicta una medición que hizo («hoy medí…»), usa registrar_medicion y "
     "nunca digas que quedó guardada: se guarda solo cuando escribe «confirmo». Las "
     "mediciones dictadas en el chat se consultan con consultar_mediciones_chat. "
+    "Lo que se habló en los grupos de observación de Telegram (descripciones de fotos, "
+    "por ejemplo del sitio Paramox) se consulta con consultar_observaciones_grupo. "
+    "Si preguntan qué imágenes o archivos hay guardados, presenta por separado lo subido "
+    "desde el chat y las fotos de los grupos de Telegram. "
     "No ofrezcas descargas en Excel: el chat lo ofrece solo cuando hay datos. Si la "
     "persona pide el Excel, llama de nuevo a las herramientas de esos datos con "
     "exportar=true, una vez por cada conjunto pedido: todo queda en un solo Excel. "
@@ -195,13 +217,17 @@ class AgentOrchestrator:
         if text.lower().rstrip(".!") in CONFIRMATIONS:
             return self._resolve_confirmation(external_user_id)
 
-        fija = respuesta_fija(text)
+        history = self._conversations.recent_messages(external_user_id, HISTORY_TURNS, HISTORY_MINUTES)
+        # «sí, descárgalos» justo después de ofrecer el Excel es pedir el Excel,
+        # no la respuesta fija sobre cómo descargar archivos subidos.
+        acepta_excel = _acepta_excel(text, history)
+        fija = "" if acepta_excel else respuesta_fija(text)
         if fija:
             self._conversations.save_turn(external_user_id, text, fija, [], None)
             return {"answer": fija, "sources": [], "tools_used": [], "pending_confirmation": None}
 
-        history = self._conversations.recent_messages(external_user_id, HISTORY_TURNS, HISTORY_MINUTES)
-        messages = [*_acotar_historial(history, HISTORY_MAX_CHARS), Message(role="user", text=text)]
+        pregunta = text + (AVISO_EXCEL if acepta_excel else "")
+        messages = [*_acotar_historial(history, HISTORY_MAX_CHARS), Message(role="user", text=pregunta)]
 
         tools_used: list[str] = []
         sources: list[dict] = []
@@ -216,6 +242,9 @@ class AgentOrchestrator:
         # listar_sitios siempre va: un nombre propio suelto («¿dónde queda Calostros?»)
         # no se parece a ninguna descripción y el modelo contestaba que no sabía.
         visibles = [*visibles, *[t for t in todas if t.name in SIEMPRE_VISIBLES and t not in visibles]]
+        if acepta_excel or re.search(r"excel|xlsx|exporta", text.lower()):
+            # «dámelo en Excel» no se parece a ninguna herramienta: van todas las que exportan.
+            visibles = [*visibles, *[t for t in todas if t.name in HERRAMIENTAS_EXPORTABLES and t not in visibles]]
         if self._consultar_diccionario(text, {t.name for t in todas}, messages, tools_used, sources):
             # La herramienta ya aparece en la conversación: se declara también.
             visibles = [*visibles, *[t for t in todas if t.name == HERRAMIENTA_DICCIONARIO and t not in visibles]]

@@ -80,6 +80,7 @@ VERBOS_BAJAR = {"bajar", "bajarlo", "bajarla", "bajarlos", "bajarlas"}
 # ("quiero descargar la entrevista a Rosa"), las responde el modelo buscándolo
 # con consultar_archivos_subidos, que es lo que hace aparecer el botón.
 MAX_PALABRAS_DESCARGAR = 4
+PIDE_EXCEL = {"excel", "xlsx", "exportar", "exportalo", "exportalos"}
 
 
 def _palabras(texto: str) -> list[str]:
@@ -92,6 +93,9 @@ def _pregunta_por_descargar(texto: str) -> bool:
     # para no atrapar "¿por qué bajó el nivel del agua?".
     palabras = _palabras(texto)
     if len(palabras) > MAX_PALABRAS_DESCARGAR:
+        return False
+    if PIDE_EXCEL.intersection(palabras):
+        # «descarga en Excel» pide los datos de la respuesta: lo atiende el modelo.
         return False
     if any(p.startswith("descarg") for p in palabras):
         return True
