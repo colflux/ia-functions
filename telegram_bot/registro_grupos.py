@@ -6,6 +6,7 @@ responde a los comandos de los administradores del grupo y, como en cualquier
 grupo, cuando lo mencionan.
 """
 import logging
+import re
 import threading
 import time
 from datetime import datetime, timezone
@@ -27,7 +28,12 @@ RESPONDE_A_AUDIO = "Usa este comando respondiendo a una nota de voz o audio del 
 NO_ES_AUDIO = "Ese mensaje no es un audio guardado."
 USO_CORREGIR = "Responde al audio con: /corregir <lo que realmente dijo>"
 CORREGIDO = "Corrección guardada. La transcripción de Whisper se conserva aparte para comparar."
-COMANDOS = ("/observacion", "/pausar", "/resumen", "/transcripcion", "/corregir")
+COMANDOS = ("/observacion", "/pausar", "/resumen", "/transcripcion", "/corregir", "/datos", "/ia")
+RESPONDE_A_FOTO = "Usa este comando respondiendo a una foto del grupo."
+NO_ES_FOTO = "Ese mensaje no es una foto guardada."
+USO_DATOS = ("Responde a la foto con: /datos <sitio> <AAAA-MM-DD> [dia|noche]\n"
+             "Por ejemplo: /datos Laguna Seca 2021-10-05 dia")
+DATOS_OK = "Listo: esta foto queda asociada a {sitio}, {fecha}{luz}. Con eso se comparará con las mediciones de ese día."
 USO = "Escribe el nombre del sitio, por ejemplo: /observacion Paramox"
 SOLO_ADMIN = "Solo los administradores del grupo pueden usar ese comando."
 PAUSADO = "Listo: dejo de guardar los mensajes de este grupo. Lo ya guardado se conserva."
@@ -51,9 +57,20 @@ def tipo_y_archivo(mensaje: dict) -> tuple[str, dict | None, str]:
             return "audio", {"file_id": a["file_id"], "tamano": a.get("file_size", 0),
                              "mime": a.get("mime_type") or mime, "nombre": a.get("file_name") or clave,
                              "duracion": a.get("duration")}, texto
+    if mensaje.get("location"):
+        # Ubicación compartida (📎 → Ubicación). Un lugar con nombre trae su título.
+        return "ubicacion", None, ((mensaje.get("venue") or {}).get("title") or "").strip()
     if mensaje.get("text"):
         return "texto", None, texto
     return "otro", None, texto
+
+
+def ubicacion(mensaje: dict) -> dict:
+    lugar = mensaje.get("location") or {}
+    if "latitude" not in lugar:
+        return {}
+    return {"latitud": lugar["latitude"], "longitud": lugar["longitude"],
+            "precision_m": lugar.get("horizontal_accuracy"), "origen_ubicacion": "compartida"}
 
 
 def autor(mensaje: dict) -> tuple[int | None, str]:
@@ -62,6 +79,32 @@ def autor(mensaje: dict) -> tuple[int | None, str]:
     if persona.get("username"):
         nombre = f"{nombre} (@{persona['username']})".strip()
     return persona.get("id"), nombre
+
+
+def leer_datos(argumento: str) -> tuple[str, str, str | None] | None:
+    """«Laguna Seca 2021-10-05 dia» → ("Laguna Seca", "2021-10-05", "dia")."""
+    coincide = re.fullmatch(r"\s*(.+?)\s+(\d{4}-\d{2}-\d{2})(?:\s+(d[ií]a|noche))?\s*", argumento or "", re.IGNORECASE)
+    if not coincide:
+        return None
+    luz = coincide.group(3)
+    return coincide.group(1), coincide.group(2), ("dia" if luz and luz.lower().startswith("d") else luz and "noche")
+
+
+def _atributos(atributos: dict | None) -> str:
+    if not atributos:
+        return "nada claro"
+    return "; ".join(f"{k.replace('_', ' ')}: {', '.join(v) if isinstance(v, list) else str(v).replace('_', ' ')}"
+                     for k, v in atributos.items() if k != "certeza")
+
+
+def texto_ia(datos: dict) -> str:
+    texto = f"La IA ve:\n«{datos.get('ia_descripcion') or 'sin observación'}»\n\nAtributos: {_atributos(datos.get('ia_atributos'))}"
+    if datos.get("dato_fecha"):
+        luz = f", de {datos['dato_luz']}" if datos.get("dato_luz") else ""
+        texto += f"\n\nDatos del día: {datos.get('dato_sitio')}, {datos['dato_fecha']}{luz}"
+    else:
+        texto += "\n\nSin datos del día. Responde a la foto con /datos <sitio> <AAAA-MM-DD> [dia|noche]"
+    return texto
 
 
 def texto_transcripcion(datos: dict) -> str:
@@ -77,6 +120,8 @@ def texto_transcripcion(datos: dict) -> str:
         texto += f"\n\nCorregido por {datos.get('corregida_por') or 'alguien'}:\n«{datos['transcripcion_corregida']}»"
     else:
         texto += "\n\nSi no es correcto, responde al audio con /corregir <lo que realmente dijo>"
+    if datos.get("atributos"):
+        texto += f"\n\nAtributos que menciona: {_atributos(datos['atributos'])}"
     return texto
 
 
@@ -142,6 +187,8 @@ class RegistroGrupos:
             self._tg.enviar(chat, PAUSADO)
         elif orden in ("/transcripcion", "/corregir"):
             self._revisar(mensaje, orden, argumento, nombre)
+        elif orden in ("/datos", "/ia"):
+            self._foto(mensaje, orden, argumento)
         else:
             if not self.activo(chat):
                 self._tg.enviar(chat, NO_REGISTRADO)
@@ -155,6 +202,32 @@ class RegistroGrupos:
                 lineas.append(f"{etiqueta}: {f['descripciones']} descripciones de {f['personas']} personas{pendientes}")
             self._tg.enviar(chat, "\n".join(lineas))
         return True
+
+    def _foto(self, mensaje: dict, orden: str, argumento: str) -> None:
+        """Respondiendo a una foto: /datos guarda el sitio y día reales en que se
+        tomó; /ia muestra lo que la IA ve en ella."""
+        chat = mensaje["chat"]["id"]
+        foto = (mensaje.get("reply_to_message") or {}).get("message_id")
+        if not foto:
+            self._tg.enviar(chat, RESPONDE_A_FOTO, mensaje["message_id"])
+            return
+        try:
+            datos = self._grupos.mensaje(chat, foto)
+        except Exception:
+            datos = None
+        if not datos or datos["tipo"] != "foto":
+            self._tg.enviar(chat, NO_ES_FOTO, mensaje["message_id"])
+            return
+        if orden == "/ia":
+            self._tg.enviar(chat, texto_ia(datos), foto)
+            return
+        partes = leer_datos(argumento)
+        if not partes:
+            self._tg.enviar(chat, USO_DATOS, mensaje["message_id"])
+            return
+        sitio, fecha, luz = partes
+        self._grupos.datos_foto(chat, foto, sitio, fecha, luz)
+        self._tg.enviar(chat, DATOS_OK.format(sitio=sitio, fecha=fecha, luz=f", de {luz}" if luz else ""), foto)
 
     def _revisar(self, mensaje: dict, orden: str, argumento: str, nombre: str) -> None:
         """/transcripcion y /corregir, respondiendo a un audio: muestra lo que
@@ -195,10 +268,10 @@ class RegistroGrupos:
         return admin
 
     def guardar(self, mensaje: dict, al_bot: bool = False) -> None:
-        """Solo se guardan las fotos que envía el equipo (administradores del
-        grupo) y lo que la gente dice de ellas. No se guardan stickers, GIF,
-        videos ni documentos, ni las preguntas al bot (`al_bot`), ni fotos de
-        participantes. Si un texto o audio describe la foto lo decide la api."""
+        """Se guardan las fotos que envía el equipo (administradores del grupo),
+        los textos y audios de las personas y las ubicaciones que compartan. No
+        se guardan stickers, GIF, videos ni documentos, ni las preguntas al bot
+        (`al_bot`), ni fotos de participantes."""
         tipo, archivo, texto = tipo_y_archivo(mensaje)
         persona, nombre = autor(mensaje)
         if tipo == "otro" or al_bot:
@@ -216,6 +289,7 @@ class RegistroGrupos:
             "respuesta_a": (mensaje.get("reply_to_message") or {}).get("message_id"),
             "duracion_s": (archivo or {}).get("duracion"),
             "tipo_archivo": (archivo or {}).get("mime"),
+            **ubicacion(mensaje),
         }
         contenido = None
         if archivo:

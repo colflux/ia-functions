@@ -11,17 +11,17 @@ import json
 import re
 import unicodedata
 import logging
-from datetime import datetime
+from datetime import date, datetime
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from functools import lru_cache
 
-from app.adapters.vision.gemini_vision import GeminiVision
+from app.adapters.vision.gemini_observador import GeminiObservador
 from app.bootstrap.container import get_almacen, get_llm_provider, get_observaciones_grupo
 from app.config import settings
-from app.domain.services.filtro_descripciones import FiltroDescripciones
+from app.domain.services.filtro_descripciones import FiltroDescripciones, sin_contenido
 from app.domain.services.observaciones_grupo import MensajeGrupo, resumir
 
 logger = logging.getLogger("uvicorn.error")
@@ -38,26 +38,49 @@ def _filtro() -> FiltroDescripciones:
 
 
 @lru_cache
-def _vision() -> GeminiVision | None:
-    return GeminiVision(settings.gemini_api_key, settings.image_model) if settings.gemini_api_key else None
+def _observador() -> GeminiObservador | None:
+    return GeminiObservador(settings.gemini_api_key, settings.image_model) if settings.gemini_api_key else None
+
+
+def observar_foto(contenido: bytes, tipo: str) -> tuple[bool, dict | None]:
+    """(sirve para COLFLUX, lo que ve la IA). Una foto que no muestra un
+    ecosistema, plantas, agua, suelo o trabajo de campo (una mascota, comida, un
+    meme) no se guarda. Si no se puede revisar, se guarda sin observación."""
+    observador = _observador()
+    if observador is None:
+        return True, None
+    try:
+        observacion = observador.observar(contenido, tipo)
+    except Exception:
+        logger.warning("GRUPO no se pudo revisar la foto; se guarda", exc_info=True)
+        return True, None
+    if observacion and observacion["relacionado"] is False:
+        logger.info("GRUPO foto descartada: %s", observacion.get("descripcion", "")[:120])
+        return False, observacion
+    logger.info("GRUPO foto observada: %s", (observacion or {}).get("atributos"))
+    return True, observacion
+
+
+def gps_de_foto(contenido: bytes) -> tuple[float, float] | None:
+    """Coordenadas EXIF de la foto. Telegram las quita de las fotos normales;
+    solo quedan si se envía como archivo."""
+    try:
+        import io
+
+        from PIL import Image
+        gps = Image.open(io.BytesIO(contenido)).getexif().get_ifd(0x8825)
+        if not gps or 2 not in gps or 4 not in gps:
+            return None
+        def grados(v, ref):
+            valor = float(v[0]) + float(v[1]) / 60 + float(v[2]) / 3600
+            return -valor if ref in ("S", "W") else valor
+        return round(grados(gps[2], gps.get(1)), 6), round(grados(gps[4], gps.get(3)), 6)
+    except Exception:
+        return None
 
 
 def _foto_relacionada(contenido: bytes, tipo: str) -> bool:
-    """La misma revisión que las imágenes subidas desde el chat (Gemini): una
-    foto que no muestra un ecosistema, plantas, agua, suelo o trabajo de campo
-    (una mascota, comida, un meme) no se guarda. Si no se puede revisar, se guarda."""
-    revisor = _vision()
-    if revisor is None:
-        return True
-    try:
-        revision = revisor.revisar(contenido, tipo, "foto de un sitio natural enviada a un grupo de observación de COLFLUX")
-    except Exception:
-        logger.warning("GRUPO no se pudo revisar la foto; se guarda", exc_info=True)
-        return True
-    if revision and revision.get("relacionado") is False:
-        logger.info("GRUPO foto descartada: %s", revision.get("motivo"))
-        return False
-    return True
+    return observar_foto(contenido, tipo)[0]
 
 
 def _descartado(motivo: str) -> dict:
@@ -141,13 +164,17 @@ def guardar_mensaje(
     grupo = servicio.grupo_activo(mensaje.chat_id)
     if not grupo:
         return _descartado("grupo no registrado o pausado")
-    if mensaje.tipo not in ("foto", "texto", "audio"):
-        return _descartado("no es foto, texto ni audio")
-    if mensaje.tipo != "foto":
+    if mensaje.tipo not in ("foto", "texto", "audio", "ubicacion"):
+        return _descartado("no es foto, texto, audio ni ubicación")
+    if mensaje.tipo in ("texto", "audio"):
         if servicio.foto_para(mensaje) is None:
             return _descartado("todavía no hay una foto que describir")
-        if mensaje.tipo == "texto" and not _filtro().es_descripcion(mensaje.texto):
-            return _descartado("no es una descripción")
+        if mensaje.tipo == "texto":
+            if sin_contenido(mensaje.texto):
+                return _descartado("sin contenido (emojis, risas)")
+            # No se descarta nada por no parecer descripción: se marca, para
+            # revisarlo después (es_descripcion = false).
+            mensaje.es_descripcion, mensaje.atributos = _filtro().analizar(mensaje.texto)
 
     clave = None
     if archivo is not None:
@@ -159,8 +186,16 @@ def guardar_mensaje(
             logger.warning("GRUPO sin bucket configurado: el archivo del mensaje %s no se guarda", mensaje.message_id)
         else:
             tipo = archivo.content_type or mensaje.tipo_archivo or "application/octet-stream"
-            if mensaje.tipo == "foto" and not _foto_relacionada(contenido, tipo):
-                return _descartado("la foto no tiene que ver con COLFLUX")
+            if mensaje.tipo == "foto":
+                sirve, observacion = observar_foto(contenido, tipo)
+                if not sirve:
+                    return _descartado("la foto no tiene que ver con COLFLUX")
+                if observacion:
+                    mensaje.ia_descripcion, mensaje.ia_atributos = observacion["descripcion"], observacion["atributos"]
+                gps = gps_de_foto(contenido)
+                if gps and mensaje.latitud is None:
+                    mensaje.latitud, mensaje.longitud = gps
+                    mensaje.origen_ubicacion = "GPS de la foto"
             extension = EXTENSIONES.get(tipo, (archivo.filename or "").rsplit(".", 1)[-1][:5] or "bin")
             clave = _clave(mensaje, grupo["sitio"], extension)
             almacen.subir(clave, contenido, tipo, {"chat": str(mensaje.chat_id), "mensaje": str(mensaje.message_id)})
@@ -188,8 +223,36 @@ def corregir(chat_id: int, message_id: int, datos: Correccion,
     _verificar(x_grupos_token)
     if not datos.texto.strip():
         raise HTTPException(422, "Falta el texto corregido.")
-    if not get_observaciones_grupo().corregir(chat_id, message_id, datos.texto, datos.por.strip()):
+    servicio = get_observaciones_grupo()
+    if not servicio.corregir(chat_id, message_id, datos.texto, datos.por.strip()):
         raise HTTPException(404, "Ese mensaje no es un audio guardado.")
+    # Los atributos se recalculan con el texto corregido.
+    guardado = servicio.mensaje(chat_id, message_id)
+    if guardado:
+        es, atributos = _filtro().analizar(datos.texto)
+        servicio.guardar_atributos(guardado["id"], atributos, es)
+    return {"ok": True}
+
+
+class DatosFoto(BaseModel):
+    sitio: str
+    fecha: date
+    luz: str | None = None
+
+
+@router.post("/{chat_id}/fotos/{message_id}/datos")
+def datos_foto(chat_id: int, message_id: int, datos: DatosFoto,
+               x_grupos_token: str | None = Header(default=None)) -> dict:
+    """Sitio y día reales de la foto (y día o noche), para comparar lo
+    descrito con las mediciones de ese día."""
+    _verificar(x_grupos_token)
+    luz = (datos.luz or "").lower() or None
+    if luz not in (None, "dia", "noche"):
+        raise HTTPException(422, "luz debe ser dia o noche.")
+    if not datos.sitio.strip():
+        raise HTTPException(422, "Falta el sitio.")
+    if not get_observaciones_grupo().datos_de_foto(chat_id, message_id, datos.sitio.strip()[:120], datos.fecha, luz):
+        raise HTTPException(404, "Ese mensaje no es una foto guardada.")
     return {"ok": True}
 
 
@@ -234,17 +297,13 @@ def transcripcion(datos: Transcripcion, x_grupos_token: str | None = Header(defa
     servicio = get_observaciones_grupo()
     texto = (datos.texto or "").strip() or None
     ok = servicio.guardar_transcripcion(datos.id, texto, datos.estado)
-    # Un audio sin voz o que no describe la foto se borra (el registro y el
-    # archivo). Si la transcripción falló se deja, para revisarlo a mano.
-    if ok and (datos.estado == "vacia" or (datos.estado == "lista" and not _filtro().es_descripcion(texto or ""))):
-        archivo = servicio.borrar(datos.id)
-        if archivo and get_almacen():
-            try:
-                get_almacen().borrar(archivo)
-            except Exception:
-                logger.exception("GRUPO no se pudo borrar el audio descartado %s", archivo)
-        logger.info("GRUPO audio %s descartado: no es una descripción", datos.id)
-        return {"ok": True, "descartado": True}
+    # Ningún audio se borra por su contenido: se marca si describe la foto o
+    # no (es_descripcion), para revisarlo después.
+    if ok and datos.estado == "lista":
+        es, atributos = _filtro().analizar(texto or "")
+        servicio.guardar_atributos(datos.id, atributos, es)
+    elif ok and datos.estado == "vacia":
+        servicio.guardar_atributos(datos.id, None, False)
     return {"ok": ok}
 
 

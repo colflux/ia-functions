@@ -51,15 +51,12 @@ Esta primera fase solo recoge y ordena; la relación con los datos es la fase 2.
    «un dado»), se transcribe otra vez sugiriéndolo («turbera», «inundado»). No se
    reemplaza texto a mano: Whisper vuelve a oír el audio y decide. Si el bot se reinicia, al arrancar retoma los
    audios pendientes.
-5. Solo se guarda lo que sirve al estudio: las fotos que envía el equipo
-   (administradores del grupo) y las descripciones de ellas. No se guardan
-   stickers, GIF, videos, documentos, fotos de participantes ni preguntas al
-   bot. Cada texto pasa por un filtro (el modelo de lenguaje, con respuesta
-   sí/no) que descarta saludos, risas, emojis, coordinación del grupo y temas
-   ajenos; un audio se transcribe y, si no es una descripción, se borra con su
-   archivo. Ante la duda o si el modelo no responde, se guarda.
-   `limpiar_mensajes.py` aplica estas reglas a lo ya guardado (primero muestra,
-   con `--borrar` borra).
+5. Qué se guarda: las fotos que envía el equipo (administradores del grupo),
+   revisadas por Gemini (una foto ajena al proyecto no se guarda), y todo lo
+   que las personas escriben o dicen sobre ellas. Un filtro con el modelo de
+   lenguaje marca si cada texto o audio describe la foto (`es_descripcion`),
+   sin borrar nada. No se guardan stickers, GIF, videos, documentos, emojis o
+   risas sueltas, fotos de participantes ni preguntas al bot.
 6. Revisión de transcripciones: respondiendo a un audio, `/transcripcion`
    muestra lo que entendió Whisper y `/corregir <texto>` guarda lo que
    realmente se dijo. La corrección va en `transcripcion_corregida` (con quién
@@ -74,6 +71,42 @@ Esta primera fase solo recoge y ordena; la relación con los datos es la fase 2.
    foto ni las preguntas al bot. Con `exportar` va al Excel. Una pregunta
    general («¿qué imágenes tienes guardadas?») consulta a la vez los archivos
    subidos desde el chat y las fotos de los grupos, y las presenta por separado.
+
+## Atributos del sitio, descripción de la IA y ubicación
+
+Para llegar a estimar un flujo a partir de lo que la gente percibe, cada
+descripción se convierte en atributos del sitio con nombres fijos
+(`app/domain/services/atributos_sitio.py`), que siguen las categorías del
+diccionario de COLFLUX: ecosistema, cielo, temperatura, humedad del aire,
+viento, agua en superficie, color del agua, burbujas, olor, suelo al pisar,
+color del suelo, vegetación, estado de la vegetación, hojarasca y alteración.
+Además, `certeza`: si la persona lo afirma («percibe») o lo deduce («supone»).
+
+- Texto: la misma llamada al modelo que decide si es una descripción extrae sus
+  atributos. Audio: al transcribirse, y otra vez si alguien lo corrige.
+- Nada que digan las personas se borra por su contenido: lo que el modelo no
+  considera descripción queda guardado con `es_descripcion = false`, para
+  revisarlo después. Solo no se guardan emojis o risas sueltas, stickers,
+  preguntas al bot y textos anteriores a la primera foto.
+- Foto: Gemini, en la misma llamada que decide si sirve, describe la foto
+  (`ia_descripcion`) y anota los atributos que se VEN con claridad
+  (`ia_atributos`). Todavía no se compara con lo que dicen las personas; eso
+  será la fase siguiente.
+- Ubicación: si alguien comparte su ubicación en el grupo (📎 → Ubicación), se
+  guarda, y sus descripciones de las siguientes 12 horas la llevan
+  (`latitud`, `longitud`, `precision_m`, `origen_ubicacion`). Una foto enviada
+  como archivo conserva su GPS; Telegram se lo quita a las fotos normales.
+- `/datos <sitio> <AAAA-MM-DD> [dia|noche]`, respondiendo a una foto, guarda el
+  sitio y el día reales en que se tomó, para comparar después con las
+  mediciones de ese día. `/ia` muestra lo que la IA ve en la foto.
+- Excel: cada foto (con lo que ve la IA y el día de los datos), cada mensaje
+  (con `es_descripcion` y sus atributos) y cada ubicación compartida, con fecha,
+  autor y coordenadas.
+- `completar_atributos.py` calcula los atributos de lo guardado antes.
+
+Fase siguiente (no incluida): consenso entre personas, contraste con la IA,
+comparación con las mediciones del día de cada foto y estimación de un rango de
+flujo a partir de los sitios medidos más parecidos.
 
 ## Piezas
 
