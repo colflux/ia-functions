@@ -24,13 +24,18 @@ from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
 from typing import Any
 
+from psycopg.types.json import Jsonb
+
 from app.db.session import get_connection
 
 logger = logging.getLogger("uvicorn.error")
 
 DIAS_AUDIO = 5
 # consulta: un mensaje dirigido al bot (una pregunta, no una descripción).
-TIPOS = ("texto", "foto", "audio", "consulta", "otro")
+TIPOS = ("texto", "foto", "audio", "ubicacion", "consulta", "otro")
+# Una descripción toma la última ubicación que su autor compartió en el grupo
+# si es de las últimas horas.
+HORAS_UBICACION = 12
 
 _TABLAS = (
     """
@@ -67,6 +72,24 @@ _TABLAS = (
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS transcripcion_corregida TEXT",
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS corregida_por TEXT",
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS corregida_el TIMESTAMPTZ",
+    # Atributos del sitio (atributos_sitio.py): los que dice cada descripción y,
+    # en las fotos, los que ve la IA. Y el día y sitio reales de la foto, para
+    # comparar después con las mediciones.
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS atributos JSONB",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS ia_descripcion TEXT",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS ia_atributos JSONB",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS dato_sitio TEXT",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS dato_fecha DATE",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS dato_luz TEXT",
+    # Si el filtro cree que el mensaje describe la foto. No se borra nada por
+    # esto: se marca, para revisarlo y decidir después.
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS es_descripcion BOOLEAN",
+    # Dónde estaba quien envió el mensaje: la ubicación que compartió en el
+    # grupo (o el GPS de la foto si se envió como archivo).
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS latitud DOUBLE PRECISION",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS longitud DOUBLE PRECISION",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS precision_m DOUBLE PRECISION",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS origen_ubicacion TEXT",
     "CREATE INDEX IF NOT EXISTS observaciones_grupo_foto_idx ON observaciones_grupo (chat_id, foto_message_id)",
     "CREATE INDEX IF NOT EXISTS observaciones_grupo_fecha_idx ON observaciones_grupo (fecha)",
 )
@@ -95,6 +118,18 @@ class MensajeGrupo:
     respuesta_a: int | None = None
     duracion_s: int | None = None
     tipo_archivo: str | None = None
+    atributos: dict | None = None
+    ia_descripcion: str | None = None
+    ia_atributos: dict | None = None
+    es_descripcion: bool | None = None
+    latitud: float | None = None
+    longitud: float | None = None
+    precision_m: float | None = None
+    origen_ubicacion: str | None = None
+
+
+def _json(valor: dict | None):
+    return Jsonb(valor) if valor else None
 
 
 class ObservacionesGrupo:
@@ -141,16 +176,30 @@ class ObservacionesGrupo:
                                 (m.chat_id,)).fetchone():
                 return None
             foto = self._foto_asociada(conn, m)
+            if m.latitud is None and m.tipo in ("texto", "audio") and m.autor_id:
+                ultima = conn.execute(
+                    "SELECT latitud, longitud, precision_m FROM observaciones_grupo WHERE chat_id = %s "
+                    "AND autor_id = %s AND tipo = 'ubicacion' AND fecha BETWEEN %s AND %s "
+                    "ORDER BY fecha DESC LIMIT 1",
+                    (m.chat_id, m.autor_id, m.fecha - timedelta(hours=HORAS_UBICACION), m.fecha),
+                ).fetchone()
+                if ultima:
+                    m.latitud, m.longitud, m.precision_m = ultima
+                    m.origen_ubicacion = "compartida antes por la persona"
             # Un audio queda pendiente aunque no haya bucket: el bot lo transcribe
             # desde memoria. Solo los que tienen archivo se pueden reintentar.
             estado = "pendiente" if m.tipo == "audio" else None
             fila = conn.execute(
                 "INSERT INTO observaciones_grupo (chat_id, message_id, fecha, autor_id, autor_nombre, tipo, texto, "
-                "estado_transcripcion, archivo, tipo_archivo, duracion_s, respuesta_a, foto_message_id) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
+                "estado_transcripcion, archivo, tipo_archivo, duracion_s, respuesta_a, foto_message_id, "
+                "atributos, ia_descripcion, ia_atributos, es_descripcion, latitud, longitud, precision_m, "
+                "origen_ubicacion) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
                 "ON CONFLICT (chat_id, message_id) DO NOTHING RETURNING id",
                 (m.chat_id, m.message_id, m.fecha, m.autor_id, m.autor_nombre, m.tipo, m.texto, estado,
-                 archivo, m.tipo_archivo, m.duracion_s, m.respuesta_a, foto),
+                 archivo, m.tipo_archivo, m.duracion_s, m.respuesta_a, foto,
+                 _json(m.atributos), m.ia_descripcion, _json(m.ia_atributos), m.es_descripcion,
+                 m.latitud, m.longitud, m.precision_m, m.origen_ubicacion),
             ).fetchone()
         return {"id": fila[0] if fila else None, "duplicado": fila is None, "foto_message_id": foto}
 
@@ -184,6 +233,41 @@ class ObservacionesGrupo:
         ).fetchone()
         return fila[0] if fila else None
 
+    def guardar_atributos(self, id_: int, atributos: dict | None, es_descripcion: bool | None = None) -> None:
+        with _conexion() as conn:
+            conn.execute("UPDATE observaciones_grupo SET atributos = %s, "
+                         "es_descripcion = coalesce(%s, es_descripcion) WHERE id = %s",
+                         (_json(atributos), es_descripcion, id_))
+
+    def guardar_ia(self, id_: int, descripcion_: str | None, atributos: dict | None) -> None:
+        with _conexion() as conn:
+            conn.execute("UPDATE observaciones_grupo SET ia_descripcion = %s, ia_atributos = %s WHERE id = %s",
+                         (descripcion_, _json(atributos), id_))
+
+    def datos_de_foto(self, chat_id: int, message_id: int, sitio: str, fecha: date, luz: str | None) -> bool:
+        """El sitio y el día reales en que se tomó la foto (y si de día o de noche):
+        con eso se compara después lo descrito con las mediciones de ese día."""
+        with _conexion() as conn:
+            return conn.execute(
+                "UPDATE observaciones_grupo SET dato_sitio = %s, dato_fecha = %s, dato_luz = %s "
+                "WHERE chat_id = %s AND message_id = %s AND tipo = 'foto'",
+                (sitio, fecha, luz, chat_id, message_id),
+            ).rowcount > 0
+
+    def sin_atributos(self, limite: int = 200) -> list[dict[str, Any]]:
+        """Para completar lo guardado antes: descripciones sin atributos y fotos sin observación de la IA."""
+        with _conexion() as conn:
+            filas = conn.execute(
+                "SELECT id, tipo, texto, transcripcion, transcripcion_corregida, archivo, "
+                "coalesce(tipo_archivo, 'image/jpeg') FROM observaciones_grupo "
+                "WHERE (tipo IN ('texto', 'audio') AND atributos IS NULL AND es_descripcion IS NULL "
+                "       AND (tipo = 'texto' OR estado_transcripcion = 'lista')) "
+                "   OR (tipo = 'foto' AND ia_atributos IS NULL AND ia_descripcion IS NULL AND archivo IS NOT NULL) "
+                "ORDER BY id LIMIT %s", (limite,)
+            ).fetchall()
+        return [{"id": f[0], "tipo": f[1], "texto": f[2], "transcripcion": f[3], "transcripcion_corregida": f[4],
+                 "archivo": f[5], "tipo_archivo": f[6]} for f in filas]
+
     def guardar_transcripcion(self, id_: int, texto: str | None, estado: str) -> bool:
         with _conexion() as conn:
             return conn.execute(
@@ -195,14 +279,17 @@ class ObservacionesGrupo:
         with _conexion() as conn:
             fila = conn.execute(
                 "SELECT id, tipo, transcripcion, estado_transcripcion, transcripcion_corregida, corregida_por, "
-                "archivo IS NOT NULL, fecha FROM observaciones_grupo WHERE chat_id = %s AND message_id = %s",
+                "archivo IS NOT NULL, fecha, atributos, ia_atributos, ia_descripcion, dato_sitio, dato_fecha, dato_luz "
+                "FROM observaciones_grupo WHERE chat_id = %s AND message_id = %s",
                 (chat_id, message_id),
             ).fetchone()
         if not fila:
             return None
         return {"id": fila[0], "tipo": fila[1], "transcripcion": fila[2], "estado_transcripcion": fila[3],
                 "transcripcion_corregida": fila[4], "corregida_por": fila[5], "audio_disponible": fila[6],
-                "fecha": fila[7].isoformat(timespec="minutes")}
+                "fecha": fila[7].isoformat(timespec="minutes"), "atributos": fila[8], "ia_atributos": fila[9],
+                "ia_descripcion": fila[10], "dato_sitio": fila[11],
+                "dato_fecha": fila[12].isoformat() if fila[12] else None, "dato_luz": fila[13]}
 
     def corregir(self, chat_id: int, message_id: int, texto: str, por: str) -> bool:
         """Guarda la transcripción corregida por una persona; la de Whisper se conserva."""
@@ -266,7 +353,9 @@ class ObservacionesGrupo:
             filas = conn.execute(
                 "SELECT o.id, g.sitio, o.chat_id, o.message_id, o.fecha AT TIME ZONE 'America/Bogota', "
                 "o.autor_id, o.autor_nombre, o.tipo, o.texto, o.transcripcion, o.estado_transcripcion, "
-                "o.foto_message_id, o.archivo IS NOT NULL, o.transcripcion_corregida, o.archivo "
+                "o.foto_message_id, o.archivo IS NOT NULL, o.transcripcion_corregida, o.archivo, "
+                "o.atributos, o.ia_descripcion, o.ia_atributos, o.dato_sitio, o.dato_fecha, o.dato_luz, "
+                "o.es_descripcion, o.latitud, o.longitud, o.precision_m, o.origen_ubicacion "
                 f"FROM observaciones_grupo o JOIN grupos_observacion g USING (chat_id) {donde} "
                 "ORDER BY o.fecha, o.message_id",
                 valores,
@@ -276,6 +365,10 @@ class ObservacionesGrupo:
             "fecha": f[4].isoformat(timespec="minutes"), "autor_id": f[5], "autor": f[6], "tipo": f[7],
             "texto": f[8], "transcripcion": f[9], "estado_transcripcion": f[10], "foto": f[11],
             "archivo_disponible": f[12], "transcripcion_corregida": f[13], "archivo": f[14],
+            "atributos": f[15], "ia_descripcion": f[16], "ia_atributos": f[17], "dato_sitio": f[18],
+            "dato_fecha": f[19].isoformat() if f[19] else None, "dato_luz": f[20],
+            "es_descripcion": f[21], "latitud": f[22], "longitud": f[23], "precision_m": f[24],
+            "origen_ubicacion": f[25],
         } for f in filas]
 
 
@@ -293,6 +386,8 @@ def resumir(filas: list[dict[str, Any]]) -> dict[str, Any]:
     devuelve aparte; las preguntas al bot tampoco."""
     fotos: dict[Any, dict[str, Any]] = {}
     for f in filas:
+        if f["tipo"] == "ubicacion":
+            continue  # la ubicación va en el Excel; no es una descripción de una foto
         clave = (f["chat_id"], f["foto"])
         grupo = fotos.setdefault(clave, {"sitio": f["sitio"], "foto": f["foto"], "enviada": None,
                                          "descripciones": [], "personas": set(), "audios_pendientes": 0})
@@ -300,14 +395,21 @@ def resumir(filas: list[dict[str, Any]]) -> dict[str, Any]:
             grupo["enviada"] = f["fecha"]
             grupo["pie"] = f["texto"]
             grupo["archivo"] = f.get("archivo")
+            grupo["ia"] = {"descripcion": f.get("ia_descripcion"), "atributos": f.get("ia_atributos")}
+            if f.get("dato_fecha"):
+                grupo["datos"] = {"sitio": f.get("dato_sitio"), "fecha": f["dato_fecha"], "luz": f.get("dato_luz")}
             continue
         if f["tipo"] == "audio" and f["estado_transcripcion"] == "pendiente":
             grupo["audios_pendientes"] += 1
         texto = descripcion(f)
-        if texto and f["tipo"] in ("texto", "audio"):
+        if texto and f["tipo"] in ("texto", "audio") and f.get("es_descripcion") is False:
+            grupo["otros_mensajes"] = grupo.get("otros_mensajes", 0) + 1
+        elif texto and f["tipo"] in ("texto", "audio"):
             entrada = {"fecha": f["fecha"], "autor": f["autor"], "tipo": f["tipo"], "texto": texto}
             if f["tipo"] == "audio":
                 entrada["transcripcion_revisada"] = bool(f.get("transcripcion_corregida"))
+            if f.get("atributos"):
+                entrada["atributos"] = f["atributos"]
             grupo["descripciones"].append(entrada)
             grupo["personas"].add(f["autor_id"] or f["autor"])
     resumen = []
@@ -321,6 +423,10 @@ def resumir(filas: list[dict[str, Any]]) -> dict[str, Any]:
             "descripciones": len(g["descripciones"]),
             "personas": len(g["personas"]),
             "audios_por_transcribir": g["audios_pendientes"],
+            "otros_mensajes_no_descripcion": g.get("otros_mensajes", 0),
+            "foto_del_dia": g.get("datos"),
+            "lo_que_ve_la_ia": (g.get("ia") or {}).get("descripcion"),
+            "atributos_que_ve_la_ia": (g.get("ia") or {}).get("atributos"),
             "textos": g["descripciones"],
         })
     return {

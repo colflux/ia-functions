@@ -7,6 +7,7 @@ from typing import Any
 
 from app.domain.models import ToolSpec
 from app.domain.ports.tool_provider import ToolProvider
+from app.domain.services.atributos_sitio import CAMPOS
 from app.domain.services.observaciones_grupo import ObservacionesGrupo, descripcion, resumir
 
 # Prefijo de las imágenes que el chat sabe mostrar y descargar.
@@ -17,7 +18,9 @@ CONSULTAR_SUBIDOS = {"herramienta": "consultar_archivos_subidos", "argumentos": 
 MAX_TEXTOS_POR_FOTO = 15
 NOTA = ("Son descripciones cualitativas que las personas de un grupo de Telegram dieron sobre fotos: "
         "lo que perciben, no mediciones. Los audios aparecen transcritos automáticamente (Whisper); los que "
-        "tienen transcripcion_revisada=true los corrigió una persona, los demás pueden tener errores. Cita los textos tal cual, sin inventar.")
+        "tienen transcripcion_revisada=true los corrigió una persona, los demás pueden tener errores. Cita los textos tal cual, sin inventar. "
+        "'lo_que_ve_la_ia' es la descripción automática de la foto; preséntala aparte de lo que dicen las "
+        "personas, sin compararlas. Son percepciones: no las conviertas en valores de flujo.")
 
 
 def _fechas(valor: Any) -> tuple[date | None, date | None]:
@@ -52,8 +55,10 @@ class ObservacionesGrupoToolProvider(ToolProvider):
                 "Fotos e imágenes enviadas a los grupos de observación de Telegram (por ejemplo el del "
                 "sitio Paramox) y las descripciones y percepciones que las personas escribieron o dijeron "
                 "en audio sobre ellas. Devuelve, por foto, cuántas descripciones y cuántas personas hubo, y "
-                "los textos; las fotos se pueden ver y descargar desde el chat. Filtra por sitio y fecha. "
-                "Con exportar=true entrega todos los mensajes para el Excel."
+                "los textos, y lo que la IA describe de cada foto; las fotos se pueden ver y descargar desde el "
+                "chat. Filtra por sitio y fecha. Con exportar=true entrega el Excel: cada foto y cada mensaje con "
+                "su fecha, autor, ubicación y los atributos del sitio que menciona (cielo, agua, suelo, "
+                "vegetación, olor...)."
             ),
             parameters={
                 "type": "object",
@@ -104,11 +109,45 @@ class ObservacionesGrupoToolProvider(ToolProvider):
             # Pregunta general («¿qué imágenes tienes?»): también lo subido desde el chat.
             datos["consultar_tambien"] = CONSULTAR_SUBIDOS
         if arguments.get("exportar"):
-            datos["exportar"] = {"titulo": "Observaciones del grupo", "filas": [
-                {"registro": f["registro"], "sitio": f["sitio"], "fecha": f["fecha"], "autor": f["autor"],
-                 "tipo": f["tipo"], "foto": f["foto"], "descripcion": descripcion(f),
-                 "transcripcion_whisper": f["transcripcion"] or "",
-                 "transcripcion_corregida": f["transcripcion_corregida"] or "",
-                 "estado_transcripcion": f["estado_transcripcion"] or ""}
-                for f in filas if f["tipo"] in ("foto", "texto", "audio")]}
+            datos["exportar"] = {"titulo": "Observaciones del grupo", "filas": _filas_mensajes(filas)}
+        for foto_ in datos["por_foto"]:
+            # En la respuesta van los textos; los atributos de cada
+            # texto solo en el Excel, para no cargar al modelo.
+            for t in foto_["textos"]:
+                t.pop("atributos", None)
         return datos
+
+
+def _celda(valor: Any) -> str:
+    if valor is None:
+        return ""
+    return ", ".join(valor) if isinstance(valor, list) else str(valor)
+
+
+def _filas_mensajes(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Un renglón por foto o descripción. En las descripciones, los atributos
+    que dijo la persona; en las fotos, los que ve la IA y el día de los datos."""
+    salida = []
+    for f in filas:
+        if f["tipo"] not in ("foto", "texto", "audio", "ubicacion"):
+            continue
+        es_foto = f["tipo"] == "foto"
+        atributos = (f.get("ia_atributos") if es_foto else f.get("atributos")) or {}
+        fila = {"registro": f["registro"], "sitio": f["sitio"], "fecha": f["fecha"], "autor": f["autor"],
+                "tipo": f["tipo"], "foto": f["foto"],
+                "descripcion": (f.get("ia_descripcion") or "") if es_foto else descripcion(f),
+                "es_descripcion": ("" if es_foto or f["tipo"] == "ubicacion" else
+                                   "no" if f.get("es_descripcion") is False else "sí"),
+                "fuente_atributos": "IA (foto)" if es_foto else "persona",
+                "certeza": atributos.get("certeza", ""),
+                "transcripcion_whisper": f["transcripcion"] or "",
+                "transcripcion_corregida": f["transcripcion_corregida"] or "",
+                "datos_sitio": f.get("dato_sitio") or "", "datos_fecha": f.get("dato_fecha") or "",
+                "datos_luz": f.get("dato_luz") or "",
+                "latitud": f.get("latitud") if f.get("latitud") is not None else "",
+                "longitud": f.get("longitud") if f.get("longitud") is not None else "",
+                "origen_ubicacion": f.get("origen_ubicacion") or ""}
+        fila.update({campo: _celda(atributos.get(campo)) for campo in CAMPOS})
+        salida.append(fila)
+    return salida
+
