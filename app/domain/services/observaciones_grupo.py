@@ -90,6 +90,23 @@ _TABLAS = (
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS longitud DOUBLE PRECISION",
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS precision_m DOUBLE PRECISION",
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS origen_ubicacion TEXT",
+    # Ubicaciones que comparte cada persona (en el grupo, en el chat privado
+    # con el bot o en tiempo real). Sus descripciones toman la más reciente.
+    """
+    CREATE TABLE IF NOT EXISTS ubicaciones_personas (
+        id SERIAL PRIMARY KEY,
+        autor_id BIGINT NOT NULL,
+        autor_nombre TEXT NOT NULL DEFAULT '',
+        chat_id BIGINT,
+        latitud DOUBLE PRECISION NOT NULL,
+        longitud DOUBLE PRECISION NOT NULL,
+        precision_m DOUBLE PRECISION,
+        origen TEXT NOT NULL,
+        fecha TIMESTAMPTZ NOT NULL,
+        creado TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS ubicaciones_personas_autor_idx ON ubicaciones_personas (autor_id, fecha)",
     "CREATE INDEX IF NOT EXISTS observaciones_grupo_foto_idx ON observaciones_grupo (chat_id, foto_message_id)",
     "CREATE INDEX IF NOT EXISTS observaciones_grupo_fecha_idx ON observaciones_grupo (fecha)",
 )
@@ -176,16 +193,18 @@ class ObservacionesGrupo:
                                 (m.chat_id,)).fetchone():
                 return None
             foto = self._foto_asociada(conn, m)
+            if m.tipo == "ubicacion" and m.latitud is not None and m.autor_id:
+                self._registrar_ubicacion(conn, m.autor_id, m.autor_nombre, m.chat_id, m.latitud, m.longitud,
+                                          m.precision_m, m.origen_ubicacion or "compartida en el grupo", m.fecha)
             if m.latitud is None and m.tipo in ("texto", "audio") and m.autor_id:
                 ultima = conn.execute(
-                    "SELECT latitud, longitud, precision_m FROM observaciones_grupo WHERE chat_id = %s "
-                    "AND autor_id = %s AND tipo = 'ubicacion' AND fecha BETWEEN %s AND %s "
-                    "ORDER BY fecha DESC LIMIT 1",
-                    (m.chat_id, m.autor_id, m.fecha - timedelta(hours=HORAS_UBICACION), m.fecha),
+                    "SELECT latitud, longitud, precision_m, origen FROM ubicaciones_personas WHERE autor_id = %s "
+                    "AND fecha BETWEEN %s AND %s ORDER BY fecha DESC LIMIT 1",
+                    (m.autor_id, m.fecha - timedelta(hours=HORAS_UBICACION), m.fecha),
                 ).fetchone()
                 if ultima:
-                    m.latitud, m.longitud, m.precision_m = ultima
-                    m.origen_ubicacion = "compartida antes por la persona"
+                    m.latitud, m.longitud, m.precision_m = ultima[:3]
+                    m.origen_ubicacion = ultima[3]
             # Un audio queda pendiente aunque no haya bucket: el bot lo transcribe
             # desde memoria. Solo los que tienen archivo se pueden reintentar.
             estado = "pendiente" if m.tipo == "audio" else None
@@ -202,6 +221,30 @@ class ObservacionesGrupo:
                  m.latitud, m.longitud, m.precision_m, m.origen_ubicacion),
             ).fetchone()
         return {"id": fila[0] if fila else None, "duplicado": fila is None, "foto_message_id": foto}
+
+    @staticmethod
+    def _registrar_ubicacion(conn, autor_id: int, autor_nombre: str, chat_id: int | None, latitud: float,
+                             longitud: float, precision_m: float | None, origen: str, fecha: datetime) -> int:
+        conn.execute(
+            "INSERT INTO ubicaciones_personas (autor_id, autor_nombre, chat_id, latitud, longitud, precision_m, "
+            "origen, fecha) VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
+            (autor_id, autor_nombre, chat_id, latitud, longitud, precision_m, origen, fecha),
+        )
+        # Las descripciones de las últimas horas que no tenían ubicación la toman.
+        return conn.execute(
+            "UPDATE observaciones_grupo SET latitud = %s, longitud = %s, precision_m = %s, origen_ubicacion = %s "
+            "WHERE autor_id = %s AND tipo IN ('texto', 'audio') AND latitud IS NULL AND fecha BETWEEN %s AND %s",
+            (latitud, longitud, precision_m, f"{origen} (después)", autor_id,
+             fecha - timedelta(hours=HORAS_UBICACION), fecha),
+        ).rowcount
+
+    def ubicacion_persona(self, autor_id: int, autor_nombre: str, chat_id: int | None, latitud: float,
+                          longitud: float, precision_m: float | None, origen: str, fecha: datetime) -> int:
+        """Guarda una ubicación compartida por una persona. Devuelve cuántas de
+        sus descripciones recientes sin ubicación la tomaron."""
+        with _conexion() as conn:
+            return self._registrar_ubicacion(conn, autor_id, autor_nombre, chat_id, latitud, longitud,
+                                             precision_m, origen, fecha)
 
     def foto_para(self, m: MensajeGrupo) -> int | None:
         """La foto a la que se asociaría el mensaje (None si aún no hay fotos)."""

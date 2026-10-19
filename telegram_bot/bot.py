@@ -85,6 +85,9 @@ class Bot:
                     desde = novedad["update_id"] + 1
                     if "message" in novedad:
                         hilos.submit(self._atender_en_orden, novedad["message"])
+                    elif "edited_message" in novedad and (novedad["edited_message"].get("location") and self._grupos):
+                        # Ubicación en tiempo real: Telegram la manda como ediciones del mensaje.
+                        hilos.submit(self._ubicacion_en_vivo, novedad["edited_message"])
 
     def _atender_en_orden(self, mensaje: dict) -> None:
         # Los mensajes de un mismo chat se responden en el orden en que llegaron.
@@ -94,11 +97,29 @@ class Bot:
             except Exception:
                 logger.exception("Error atendiendo el chat %s", mensaje["chat"]["id"])
 
+    def _ubicacion_en_vivo(self, mensaje: dict) -> None:
+        privado = mensaje["chat"].get("type") == "private"
+        try:
+            if privado or self._grupos.activo(mensaje["chat"]["id"]):
+                self._grupos.guardar_ubicacion(mensaje, privado)
+        except Exception:
+            logger.exception("No se pudo guardar la ubicación en tiempo real")
+
     def _atender(self, mensaje: dict) -> None:
         chat = mensaje["chat"]["id"]
         persona = (mensaje.get("from") or {}).get("id", chat)
         privado = mensaje["chat"].get("type") == "private"
         texto = (mensaje.get("text") or "").strip()
+
+        if privado and self._grupos:
+            # Ubicación de un toque: el enlace del grupo abre este chat con
+            # /start ubicacion, que muestra el botón; la ubicación llega aquí.
+            if mensaje.get("location"):
+                self._grupos.guardar_ubicacion(mensaje, privado=True)
+                return
+            if texto.split(" ")[0].split("@")[0] in ("/ubicacion",) or texto == "/start ubicacion":
+                self._grupos.pedir_ubicacion(chat)
+                return
 
         if not privado and self._grupos:
             orden, _, argumento = texto.partition(" ")

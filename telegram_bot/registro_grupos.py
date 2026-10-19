@@ -24,11 +24,22 @@ MAX_DESCARGA = 20 * 1024 * 1024
 REGISTRADO = ("Listo: este grupo queda como grupo de observación del sitio «{sitio}». Desde ahora guardo "
               "todo lo que se diga aquí (textos, fotos y audios). Los audios se transcriben y se borran a "
               "los {dias} días; la transcripción se conserva. Para dejar de guardar: /pausar")
+INVITA_UBICACION = ("📍 Para que tus descripciones lleven el lugar desde donde las envías, comparte tu "
+                    "ubicación una vez con un toque aquí: {enlace}\n"
+                    "Se usa solo en este estudio y vale para lo que describas en las 12 horas siguientes.")
+PIDE_UBICACION = ("Toca el botón «📍 Compartir mi ubicación» para que tus descripciones en los grupos de "
+                  "observación lleven el lugar desde donde las envías. Se usa solo en este estudio y vale "
+                  "para lo que describas en las 12 horas siguientes. Si no quieres compartirla, ignora este mensaje.")
+BOTON_UBICACION = {"keyboard": [[{"text": "📍 Compartir mi ubicación", "request_location": True}]],
+                   "resize_keyboard": True, "one_time_keyboard": True}
+GRACIAS_UBICACION = ("Gracias, guardé tu ubicación. Tus descripciones en los grupos de las próximas 12 horas "
+                     "la llevarán (también las que enviaste en las últimas 12 horas sin ubicación).")
+QUITAR_TECLADO = {"remove_keyboard": True}
 RESPONDE_A_AUDIO = "Usa este comando respondiendo a una nota de voz o audio del grupo."
 NO_ES_AUDIO = "Ese mensaje no es un audio guardado."
 USO_CORREGIR = "Responde al audio con: /corregir <lo que realmente dijo>"
 CORREGIDO = "Corrección guardada. La transcripción de Whisper se conserva aparte para comparar."
-COMANDOS = ("/observacion", "/pausar", "/resumen", "/transcripcion", "/corregir", "/datos", "/ia")
+COMANDOS = ("/observacion", "/pausar", "/resumen", "/transcripcion", "/corregir", "/datos", "/ia", "/ubicacion")
 RESPONDE_A_FOTO = "Usa este comando respondiendo a una foto del grupo."
 NO_ES_FOTO = "Ese mensaje no es una foto guardada."
 USO_DATOS = ("Responde a la foto con: /datos <sitio> <AAAA-MM-DD> [dia|noche]\n"
@@ -70,7 +81,8 @@ def ubicacion(mensaje: dict) -> dict:
     if "latitude" not in lugar:
         return {}
     return {"latitud": lugar["latitude"], "longitud": lugar["longitude"],
-            "precision_m": lugar.get("horizontal_accuracy"), "origen_ubicacion": "compartida"}
+            "precision_m": lugar.get("horizontal_accuracy"),
+            "origen_ubicacion": "en tiempo real" if lugar.get("live_period") else "compartida en el grupo"}
 
 
 def autor(mensaje: dict) -> tuple[int | None, str]:
@@ -132,6 +144,38 @@ class RegistroGrupos:
         self._transcriptor = transcriptor
         self._estado: dict[int, tuple[bool, float]] = {}
         self._admins: dict[tuple[int, int], tuple[bool, float]] = {}
+        self._usuario_bot = ""
+
+    def _enlace_ubicacion(self) -> str:
+        if not self._usuario_bot:
+            self._usuario_bot = self._tg.yo()["username"]
+        return f"https://t.me/{self._usuario_bot}?start=ubicacion"
+
+    # ── ubicación ─────────────────────────────────────────────────────────
+    def pedir_ubicacion(self, chat: int) -> None:
+        """En el chat privado: el botón que comparte la ubicación con un toque
+        (Telegram solo lo permite en chats privados)."""
+        self._tg.enviar(chat, PIDE_UBICACION, teclado=BOTON_UBICACION)
+
+    def guardar_ubicacion(self, mensaje: dict, privado: bool) -> None:
+        """Ubicación compartida en el chat privado, o actualización de una
+        ubicación en tiempo real (en el grupo o en privado). Queda asociada a la
+        persona, no a un grupo: la toman sus descripciones de las 12 horas
+        siguientes (y las de las 12 anteriores que no tenían)."""
+        datos = ubicacion(mensaje)
+        persona, nombre = autor(mensaje)
+        if not datos or not persona:
+            return
+        if privado and not mensaje.get("edit_date"):
+            datos["origen_ubicacion"] = "compartida en privado"
+        fecha = mensaje.get("edit_date") or mensaje["date"]
+        self._grupos.ubicacion_persona({
+            **datos, "autor_id": persona, "autor_nombre": nombre,
+            "fecha": datetime.fromtimestamp(fecha, tz=timezone.utc).isoformat(),
+            "chat_id": None if privado else mensaje["chat"]["id"],
+        })
+        if privado and not mensaje.get("edit_date"):
+            self._tg.enviar(mensaje["chat"]["id"], GRACIAS_UBICACION, teclado=QUITAR_TECLADO)
 
     def iniciar(self) -> None:
         threading.Thread(target=self._mantenimiento, name="grupos", daemon=True).start()
@@ -181,6 +225,7 @@ class RegistroGrupos:
             datos = self._grupos.registrar(chat, mensaje["chat"].get("title") or "", sitio, nombre)
             self._estado.pop(chat, None)
             self._tg.enviar(chat, REGISTRADO.format(sitio=datos["sitio"], dias=datos.get("dias_audio", 5)))
+            self._tg.enviar(chat, INVITA_UBICACION.format(enlace=self._enlace_ubicacion()))
         elif orden == "/pausar":
             self._grupos.pausar(chat)
             self._estado.pop(chat, None)
@@ -189,6 +234,8 @@ class RegistroGrupos:
             self._revisar(mensaje, orden, argumento, nombre)
         elif orden in ("/datos", "/ia"):
             self._foto(mensaje, orden, argumento)
+        elif orden == "/ubicacion":
+            self._tg.enviar(chat, INVITA_UBICACION.format(enlace=self._enlace_ubicacion()))
         else:
             if not self.activo(chat):
                 self._tg.enviar(chat, NO_REGISTRADO)

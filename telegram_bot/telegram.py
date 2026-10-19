@@ -24,17 +24,22 @@ class Telegram:
 
     def mensajes_nuevos(self, desde: int | None) -> list[dict]:
         return self._llamar("getUpdates", json={"offset": desde, "timeout": ESPERA_LARGA,
-                                                "allowed_updates": ["message"]})
+                                                "allowed_updates": ["message", "edited_message"]})
 
     def escribiendo(self, chat_id: int) -> None:
         self._llamar("sendChatAction", json={"chat_id": chat_id, "action": "typing"})
 
-    def enviar(self, chat_id: int, texto: str, responde_a: int | None = None) -> None:
-        """Texto plano; si pasa del límite de Telegram, en varios mensajes."""
-        for parte in partir(texto, MAX_TEXTO):
+    def enviar(self, chat_id: int, texto: str, responde_a: int | None = None,
+               teclado: dict | None = None) -> None:
+        """Texto plano; si pasa del límite de Telegram, en varios mensajes.
+        `teclado` (reply_markup) va en el último."""
+        partes = partir(texto, MAX_TEXTO)
+        for i, parte in enumerate(partes):
             cuerpo = {"chat_id": chat_id, "text": parte, "link_preview_options": {"is_disabled": True}}
             if responde_a:
                 cuerpo["reply_parameters"] = {"message_id": responde_a, "allow_sending_without_reply": True}
+            if teclado and i == len(partes) - 1:
+                cuerpo["reply_markup"] = teclado
             self._llamar("sendMessage", json=cuerpo)
 
     def enviar_archivo(self, chat_id: int, nombre: str, contenido: bytes, leyenda: str) -> None:

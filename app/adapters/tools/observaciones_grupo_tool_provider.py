@@ -10,12 +10,13 @@ from app.domain.ports.tool_provider import ToolProvider
 from app.domain.services.atributos_sitio import CAMPOS
 from app.domain.services.observaciones_grupo import ObservacionesGrupo, descripcion, resumir
 
-# Prefijo de las imágenes que el chat sabe mostrar y descargar.
-PREFIJO_IMAGENES = "documentos/imagen/"
-# Una pregunta general por imágenes o archivos guardados mira también lo subido desde el chat.
-CONSULTAR_SUBIDOS = {"herramienta": "consultar_archivos_subidos", "argumentos": {"solo_lista": True}}
+# Fotos de los grupos en el bucket (el chat las muestra y permite descargarlas).
+FOTO_DE_GRUPO = re.compile(r"^telegram/[^/]+/fotos/[^/]+$")
+PREFIJO_IMAGENES_ANTIGUO = "documentos/imagen/"  # donde quedaban antes de separarlas por sitio
 
 MAX_TEXTOS_POR_FOTO = 15
+MAX_FOTOS_LISTA = 30
+MAX_TITULO = 70
 NOTA = ("Son descripciones cualitativas que las personas de un grupo de Telegram dieron sobre fotos: "
         "lo que perciben, no mediciones. Los audios aparecen transcritos automáticamente (Whisper); los que "
         "tienen transcripcion_revisada=true los corrigió una persona, los demás pueden tener errores. Cita los textos tal cual, sin inventar. "
@@ -54,9 +55,11 @@ class ObservacionesGrupoToolProvider(ToolProvider):
             description=(
                 "Fotos e imágenes enviadas a los grupos de observación de Telegram (por ejemplo el del "
                 "sitio Paramox) y las descripciones y percepciones que las personas escribieron o dijeron "
-                "en audio sobre ellas. Devuelve, por foto, cuántas descripciones y cuántas personas hubo, y "
-                "los textos, y lo que la IA describe de cada foto; las fotos se pueden ver y descargar desde el "
-                "chat. Filtra por sitio y fecha. Con exportar=true entrega el Excel: cada foto y cada mensaje con "
+                "en audio sobre ellas. Sin 'foto' devuelve una lista breve (número, fecha y hora, título y "
+                "cuántas descripciones tiene cada foto); con 'foto' (o ultima=true) devuelve esa foto con sus "
+                "descripciones, lo que la IA ve en ella y la imagen. Filtra por sitio y fecha. Es solo lo de "
+                "Telegram: los archivos subidos desde el chat se consultan con consultar_archivos_subidos. Con "
+                "exportar=true entrega el Excel: cada foto y cada mensaje con "
                 "su fecha, autor, ubicación y los atributos del sitio que menciona (cielo, agua, suelo, "
                 "vegetación, olor...)."
             ),
@@ -65,7 +68,8 @@ class ObservacionesGrupoToolProvider(ToolProvider):
                 "properties": {
                     "sitio": {"type": "string", "description": "Nombre del sitio del grupo, por ejemplo Paramox"},
                     "fecha": {"type": "string", "description": "AAAA-MM-DD, AAAA-MM, «hoy» o «ayer»"},
-                    "foto": {"type": "integer", "description": "Número de la foto (mensaje) si se pregunta por una"},
+                    "foto": {"type": "integer", "description": "Número de la foto si se pregunta por una concreta"},
+                    "ultima": {"type": "boolean", "description": "true si se pregunta por la última foto enviada"},
                     "exportar": {"type": "boolean"},
                 },
             },
@@ -79,43 +83,73 @@ class ObservacionesGrupoToolProvider(ToolProvider):
         except ValueError as exc:
             return {"error": str(exc)}
         foto = arguments.get("foto")
-        filas = self._servicio.consultar(str(arguments.get("sitio") or "").strip(), desde, hasta,
-                                         int(foto) if foto not in (None, "") else None)
+        foto = int(foto) if foto not in (None, "") else None
+        sitio = str(arguments.get("sitio") or "").strip()
+        filas = self._servicio.consultar(sitio, desde, hasta, foto)
+        if arguments.get("ultima") and foto is None and filas:
+            fotos = [f for f in filas if f["tipo"] == "foto"]
+            if fotos:
+                foto, chat = fotos[-1]["mensaje"], fotos[-1]["chat_id"]
+                filas = [f for f in filas if f["foto"] == foto and f["chat_id"] == chat]
+        if foto is not None and len({f["chat_id"] for f in filas}) > 1:
+            sitios_foto = sorted({f["sitio"] for f in filas})
+            return {"aclarar": f"La foto {foto} existe en varios grupos ({', '.join(sitios_foto)}). "
+                               "Pregunta de qué sitio es y vuelve a consultar con 'sitio'."}
         if not filas:
             grupos = [g["sitio"] for g in self._servicio.grupos()]
-            vacio = {"sin_datos": True,
-                     "nota": "No hay mensajes de grupos de observación con esos criterios. "
-                             + (f"Grupos registrados: {', '.join(grupos)}." if grupos else "No hay grupos registrados.")}
-            if not any(arguments.get(k) for k in ("sitio", "fecha", "foto")):
-                vacio["consultar_tambien"] = CONSULTAR_SUBIDOS
-            return vacio
+            return {"sin_datos": True,
+                    "nota": "No hay mensajes de grupos de observación con esos criterios. "
+                            + (f"Grupos registrados: {', '.join(grupos)}." if grupos else "No hay grupos registrados.")}
         datos = resumir(filas)
-        sources = []
-        for foto_ in datos["por_foto"]:
-            archivo = foto_.pop("archivo", None)
-            if archivo and archivo.startswith(PREFIJO_IMAGENES):
-                pie = f": {foto_['pie_de_foto']}" if foto_["pie_de_foto"] else ""
-                sources.append({"source": archivo, "score": 1.0,
-                                "content": f"Foto {foto_['foto']} del grupo {foto_['sitio']}{pie} "
-                                           f"({foto_['descripciones']} descripciones)"})
-                foto_["imagen"] = "se muestra y se puede descargar debajo de la respuesta"
-            if len(foto_["textos"]) > MAX_TEXTOS_POR_FOTO:
-                foto_["nota_muestra"] = f"Se muestran {MAX_TEXTOS_POR_FOTO} de {len(foto_['textos'])} descripciones."
-                foto_["textos"] = foto_["textos"][:MAX_TEXTOS_POR_FOTO]
-        datos["nota"] = NOTA
-        if sources:
-            datos["sources"] = sources
-        if not any(arguments.get(k) for k in ("sitio", "fecha", "foto")):
-            # Pregunta general («¿qué imágenes tienes?»): también lo subido desde el chat.
-            datos["consultar_tambien"] = CONSULTAR_SUBIDOS
+        salida = _detalle(datos) if foto is not None else _lista(datos)
         if arguments.get("exportar"):
-            datos["exportar"] = {"titulo": "Observaciones del grupo", "filas": _filas_mensajes(filas)}
-        for foto_ in datos["por_foto"]:
-            # En la respuesta van los textos; los atributos de cada
-            # texto solo en el Excel, para no cargar al modelo.
-            for t in foto_["textos"]:
-                t.pop("atributos", None)
-        return datos
+            salida["exportar"] = {"titulo": "Observaciones del grupo", "filas": _filas_mensajes(filas)}
+        return salida
+
+
+def _titulo(foto: dict[str, Any]) -> str:
+    """El pie de la foto o, si no tiene, la primera frase de lo que ve la IA."""
+    texto = (foto.get("pie_de_foto") or foto.get("lo_que_ve_la_ia") or "").strip()
+    texto = re.split(r"(?<=[.!?])\s", texto, maxsplit=1)[0] if texto else f"Foto {foto['foto']}"
+    return texto if len(texto) <= MAX_TITULO else texto[:MAX_TITULO].rsplit(" ", 1)[0] + "…"
+
+
+def _lista(datos: dict[str, Any]) -> dict[str, Any]:
+    """Una línea por foto, sin textos ni imágenes: con muchas fotos la respuesta
+    sería enorme. Para ver una, se pregunta por su número."""
+    fotos = [f for f in datos["por_foto"] if isinstance(f["foto"], int)]
+    lista = [{"sitio": f["sitio"], "foto": f["foto"], "fecha": f["foto_enviada"], "titulo": _titulo(f),
+              "descripciones": f["descripciones"], "personas": f["personas"]} for f in fotos]
+    salida = {"sitios": sorted({f["sitio"] for f in fotos}), "total_fotos": len(lista),
+              "fotos": lista[-MAX_FOTOS_LISTA:],
+              "nota": ("Responde con una lista breve: una línea por foto con su número, fecha y hora y título "
+                       "(y el sitio, si hay fotos de varios sitios), "
+                       "y cuántas descripciones tiene. No pegues las descripciones. Ofrece ver una foto concreta "
+                       "(por su número o «la última») o descargar todo en Excel.")}
+    if len(lista) > MAX_FOTOS_LISTA:
+        salida["nota_muestra"] = f"Se muestran las {MAX_FOTOS_LISTA} fotos más recientes de {len(lista)}."
+    return salida
+
+
+def _detalle(datos: dict[str, Any]) -> dict[str, Any]:
+    """Una foto: sus descripciones, lo que ve la IA y la imagen (debajo de la respuesta)."""
+    sources = []
+    for foto_ in datos["por_foto"]:
+        archivo = foto_.pop("archivo", None)
+        if archivo and (FOTO_DE_GRUPO.match(archivo) or archivo.startswith(PREFIJO_IMAGENES_ANTIGUO)):
+            sources.append({"source": archivo, "score": 1.0,
+                            "content": f"Foto {foto_['foto']} del grupo {foto_['sitio']}: {_titulo(foto_)} "
+                                       f"({foto_['descripciones']} descripciones)"})
+            foto_["imagen"] = "se muestra y se puede descargar debajo de la respuesta"
+        if len(foto_["textos"]) > MAX_TEXTOS_POR_FOTO:
+            foto_["nota_muestra"] = f"Se muestran {MAX_TEXTOS_POR_FOTO} de {len(foto_['textos'])} descripciones."
+            foto_["textos"] = foto_["textos"][:MAX_TEXTOS_POR_FOTO]
+        for t in foto_["textos"]:
+            t.pop("atributos", None)  # los atributos van en el Excel, no cargan al modelo
+    datos["nota"] = NOTA
+    if sources:
+        datos["sources"] = sources
+    return datos
 
 
 def _celda(valor: Any) -> str:

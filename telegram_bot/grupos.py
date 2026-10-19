@@ -43,6 +43,9 @@ class Grupos:
         return self._ok(self._http.post(f"{self._url}/{chat_id}/fotos/{message_id}/datos",
                                         json={"sitio": sitio, "fecha": fecha, "luz": luz}))
 
+    def ubicacion_persona(self, datos: dict) -> dict:
+        return self._ok(self._http.post(f"{self._url}/ubicaciones", json=datos))
+
     def audios_pendientes(self) -> list[dict]:
         return self._ok(self._http.get(f"{self._url}/audios/pendientes"))
 
