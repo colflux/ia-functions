@@ -369,7 +369,8 @@ class CargaDocumentos:
         imágenes las puede ver cualquiera; descargar originales sigue pidiendo nivel."""
         if self._almacen is None:
             raise ErrorDeCarga(503, "Las imágenes no están disponibles en este momento.")
-        if not (es_archivo_subido(clave) and clave.startswith(f"{PREFIJO_DOCUMENTOS}imagen/")):
+        if not (es_archivo_subido(clave) and (clave.startswith(f"{PREFIJO_DOCUMENTOS}imagen/")
+                                               or es_foto_de_grupo(clave))):
             raise ErrorDeCarga(404, "Esa imagen no existe.")
         try:
             enlace = self._almacen.enlace_descarga(clave, nombre_visible(clave), SEGUNDOS_ENLACE, en_linea=True)
@@ -529,13 +530,19 @@ class CargaDocumentos:
                 logger.exception("CARGA quedó en el bucket sin indexar: %s", clave)
 
 
+def es_foto_de_grupo(clave: str) -> bool:
+    """Foto de un grupo de observación de Telegram: telegram/<sitio>/fotos/<archivo>."""
+    return bool(re.fullmatch(r"telegram/[^/]+/fotos/[^/]+", clave)) and ".." not in clave
+
+
 def es_archivo_subido(clave: str) -> bool:
-    """Solo los originales se descargan; las huellas y descripciones son internas."""
+    """Solo los originales se descargan; las huellas y descripciones son internas.
+    Las fotos de los grupos de Telegram se descargan igual que las subidas."""
     return (
         clave.startswith(PREFIJO_DOCUMENTOS)
         and not clave.startswith((PREFIJO_HUELLAS, PREFIJO_INFO))
         and ".." not in clave
-    )
+    ) or es_foto_de_grupo(clave)
 
 
 def nombre_visible(clave: str) -> str:

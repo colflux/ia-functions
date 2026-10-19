@@ -34,13 +34,16 @@ Esta primera fase solo recoge y ordena; la relación con los datos es la fase 2.
 2. Desde ahí el bot guarda **en silencio** los mensajes del grupo
    (`observaciones_grupo`): autor, hora, tipo (texto, foto, audio, consulta u
    otro), texto o pie de foto, y a qué mensaje responde.
-3. Las fotos van al bucket junto a las imágenes subidas desde el chat
-   (`documentos/imagen/<día>-<sello>-<sitio>-foto-<mensaje>.jpg`), así el chat
-   las muestra y ofrece descargarlas con los mismos permisos (verlas cualquiera,
-   descargar el original desde nivel reportador). Los audios van a
-   `grupos/<chat>/<día>/<mensaje>.<ext>`. Las fotos se conservan; los audios se borran a los 5 días (`GRUPOS_DIAS_AUDIO`;
-   la transcripción se queda). Mientras el audio exista se puede escuchar en
-   Telegram y comparar.
+3. Todo lo de Telegram va en el bucket aparte de lo subido desde la plataforma,
+   por sitio: `telegram/<sitio>/fotos/` y `telegram/<sitio>/audios/<día>/`.
+   Lo subido desde el chat de la plataforma sigue en `documentos/<tipo>/`
+   (datos, documento, entrevista, diccionario, imagen). El chat muestra las
+   fotos de los grupos y permite descargarlas con los mismos permisos que las
+   imágenes subidas (verlas cualquiera; el original, desde nivel reportador).
+   Las fotos se conservan; los audios se borran a los 5 días
+   (`GRUPOS_DIAS_AUDIO`; la transcripción se queda) y los Excel que genera el
+   chat (`descargas/`), a los 7, en la misma tarea diaria del bot.
+   `mover_a_carpetas.py` pasa a esta estructura lo guardado antes.
 4. Cada audio (nota de voz, archivo de audio o video circular) se transcribe en
    un hilo aparte con Whisper; el modelo se carga al primer audio y se suelta
    tras 15 minutos sin audios. El vocabulario del campo está en
@@ -65,12 +68,13 @@ Esta primera fase solo recoge y ordena; la relación con los datos es la fase 2.
 7. Cada mensaje se asocia a una foto: la foto a sí misma; una respuesta a una
    foto, a esa foto; una respuesta a otro mensaje, a la foto de ese mensaje; lo
    demás, a la última foto enviada.
-8. En el chat, `consultar_observaciones_grupo(sitio, fecha, foto, exportar)`
-   devuelve por foto: cuántas descripciones, de cuántas personas, y los textos.
-   Las descripciones son textos y audios transcritos; no cuentan el pie de la
-   foto ni las preguntas al bot. Con `exportar` va al Excel. Una pregunta
-   general («¿qué imágenes tienes guardadas?») consulta a la vez los archivos
-   subidos desde el chat y las fotos de los grupos, y las presenta por separado.
+8. En el chat, `consultar_observaciones_grupo(sitio, fecha, foto, ultima, exportar)`:
+   sin foto devuelve una lista breve (número, fecha y hora, título y cuántas
+   descripciones tiene cada foto), sin textos ni imágenes, para que no crezca con
+   muchas fotos; con `foto` o `ultima` devuelve esa foto con sus descripciones,
+   lo que ve la IA y la imagen. Con `exportar` va todo al Excel. Lo de Telegram
+   y lo subido desde el chat son consultas distintas: preguntar por una no trae
+   la otra.
 
 ## Atributos del sitio, descripción de la IA y ubicación
 
@@ -92,10 +96,18 @@ Además, `certeza`: si la persona lo afirma («percibe») o lo deduce («supone�
   (`ia_descripcion`) y anota los atributos que se VEN con claridad
   (`ia_atributos`). Todavía no se compara con lo que dicen las personas; eso
   será la fase siguiente.
-- Ubicación: si alguien comparte su ubicación en el grupo (📎 → Ubicación), se
-  guarda, y sus descripciones de las siguientes 12 horas la llevan
-  (`latitud`, `longitud`, `precision_m`, `origen_ubicacion`). Una foto enviada
-  como archivo conserva su GPS; Telegram se lo quita a las fotos normales.
+- Ubicación: Telegram no entrega a los bots la ubicación de quien escribe; solo
+  la que la persona comparte. Para que sea de un toque, al registrar el grupo
+  (y con `/ubicacion`) el bot publica un enlace que abre el chat privado con el
+  bot y muestra el botón «📍 Compartir mi ubicación» (Telegram solo permite ese
+  botón en chats privados). También sirve compartirla en el grupo
+  (📎 → Ubicación) o compartir la ubicación en tiempo real, cuyas
+  actualizaciones llegan como ediciones del mensaje. Cada ubicación queda en
+  `ubicaciones_personas`, por persona; sus descripciones de las 12 horas
+  siguientes la toman, y también las de las 12 horas anteriores que no tenían
+  (`origen_ubicacion` lo dice: «compartida en privado», «en tiempo real», «…
+  (después)»). Una foto enviada como archivo conserva su GPS; Telegram se lo
+  quita a las fotos normales.
 - `/datos <sitio> <AAAA-MM-DD> [dia|noche]`, respondiendo a una foto, guarda el
   sitio y el día reales en que se tomó, para comparar después con las
   mediciones de ese día. `/ia` muestra lo que la IA ve en la foto.

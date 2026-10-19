@@ -11,7 +11,7 @@ import json
 import re
 import unicodedata
 import logging
-from datetime import date, datetime
+from datetime import date, datetime, timedelta, timezone
 
 from fastapi import APIRouter, File, Form, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel
@@ -234,6 +234,30 @@ def corregir(chat_id: int, message_id: int, datos: Correccion,
     return {"ok": True}
 
 
+class UbicacionPersona(BaseModel):
+    autor_id: int
+    autor_nombre: str = ""
+    chat_id: int | None = None
+    latitud: float
+    longitud: float
+    precision_m: float | None = None
+    origen_ubicacion: str = "compartida"
+    fecha: datetime
+
+
+@router.post("/ubicaciones")
+def ubicacion_persona(datos: UbicacionPersona, x_grupos_token: str | None = Header(default=None)) -> dict:
+    """Ubicación que una persona compartió con el bot (en privado, con un toque)
+    o una actualización de su ubicación en tiempo real."""
+    _verificar(x_grupos_token)
+    if not (-90 <= datos.latitud <= 90 and -180 <= datos.longitud <= 180):
+        raise HTTPException(422, "Coordenadas fuera de rango.")
+    actualizadas = get_observaciones_grupo().ubicacion_persona(
+        datos.autor_id, datos.autor_nombre.strip(), datos.chat_id, datos.latitud, datos.longitud,
+        datos.precision_m, datos.origen_ubicacion[:60], datos.fecha)
+    return {"ok": True, "descripciones_actualizadas": actualizadas}
+
+
 class DatosFoto(BaseModel):
     sitio: str
     fecha: date
@@ -256,18 +280,24 @@ def datos_foto(chat_id: int, message_id: int, datos: DatosFoto,
     return {"ok": True}
 
 
+def carpeta_sitio(sitio: str) -> str:
+    """«Laguna Verde» → «laguna-verde»: nombre de la carpeta del sitio en el bucket."""
+    nombre = unicodedata.normalize("NFKD", sitio).encode("ascii", "ignore").decode().lower()
+    return re.sub(r"[^a-z0-9]+", "-", nombre).strip("-") or "grupo"
+
+
 def _clave(mensaje: MensajeGrupo, sitio: str, extension: str) -> str:
-    """Las fotos van con las imágenes subidas desde el chat (documentos/imagen/),
-    con el mismo formato de nombre: así el chat las muestra y ofrece descargarlas
-    con los mismos permisos (verlas cualquiera, descargar el original desde nivel
-    reportador). Los audios quedan aparte en grupos/, porque se borran a los días."""
+    """Todo lo de Telegram va aparte de lo subido desde la plataforma, por sitio:
+      telegram/<sitio>/fotos/<día>-<sello>-<sitio>-foto-<mensaje>.jpg
+      telegram/<sitio>/audios/<día>/<mensaje>.ogg   (se borran a los días)
+    El chat muestra esas fotos y ofrece descargarlas con los mismos permisos que
+    las imágenes subidas (verlas cualquiera, el original desde nivel reportador)."""
     dia = mensaje.fecha.date().isoformat()
+    carpeta = carpeta_sitio(sitio)
     if mensaje.tipo == "foto":
         sello = hashlib.md5(f"{mensaje.chat_id}:{mensaje.message_id}".encode()).hexdigest()[:8]
-        nombre = unicodedata.normalize("NFKD", sitio).encode("ascii", "ignore").decode().lower()
-        nombre = re.sub(r"[^a-z0-9]+", "-", nombre).strip("-") or "grupo"
-        return f"documentos/imagen/{dia}-{sello}-{nombre}-foto-{mensaje.message_id}.{extension}"
-    return f"grupos/{mensaje.chat_id}/{dia}/{mensaje.message_id}.{extension}"
+        return f"telegram/{carpeta}/fotos/{dia}-{sello}-{carpeta}-foto-{mensaje.message_id}.{extension}"
+    return f"telegram/{carpeta}/audios/{dia}/{mensaje.message_id}.{extension}"
 
 
 @router.get("/audios/pendientes")
@@ -324,7 +354,30 @@ def depurar_audios(x_grupos_token: str | None = Header(default=None)) -> dict:
             logger.exception("GRUPO no se pudo borrar el audio %s", audio["archivo"])
     if borrados:
         logger.info("GRUPO audios de más de %s días borrados: %s", settings.grupos_dias_audio, borrados)
-    return {"borrados": borrados}
+    return {"borrados": borrados, "excel_borrados": _depurar_excel(almacen)}
+
+
+DIAS_EXCEL = 7
+
+
+def _depurar_excel(almacen) -> int:
+    """Los Excel que genera el chat son temporales: se borran a los 7 días (si
+    alguien los vuelve a pedir, se generan de nuevo). Va en la misma tarea
+    diaria que los audios."""
+    if almacen is None or not hasattr(almacen, "listar"):
+        return 0
+    limite = datetime.now(timezone.utc) - timedelta(days=DIAS_EXCEL)
+    borrados = 0
+    try:
+        for clave, fecha in almacen.listar("descargas/"):
+            if fecha < limite:
+                almacen.borrar(clave)
+                borrados += 1
+    except Exception:
+        logger.exception("GRUPO no se pudieron depurar los Excel")
+    if borrados:
+        logger.info("Excel de más de %s días borrados: %s", DIAS_EXCEL, borrados)
+    return borrados
 
 
 @router.get("/{chat_id}/resumen")

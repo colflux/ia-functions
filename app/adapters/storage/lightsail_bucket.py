@@ -62,5 +62,15 @@ class LightsailBucket(FileStorage):
             ExpiresIn=segundos,
         )
 
+    def listar(self, prefijo: str) -> list[tuple[str, object]]:
+        """(clave, fecha de modificación) de los objetos que empiezan por `prefijo`."""
+        salida = []
+        paginas = self._cliente.get_paginator("list_objects_v2").paginate(
+            Bucket=self._nombre, Prefix=self._prefijo + prefijo)
+        for pagina in paginas:
+            for objeto in pagina.get("Contents", []):
+                salida.append((objeto["Key"][len(self._prefijo):], objeto["LastModified"]))
+        return salida
+
     def borrar(self, clave: str) -> None:
         self._cliente.delete_object(Bucket=self._nombre, Key=self._prefijo + clave)
