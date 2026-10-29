@@ -9,6 +9,25 @@ La transcripción de Whisper se puede revisar y corregir desde el grupo; la
 corrección se guarda aparte y no reemplaza la original, para poder medir qué
 tanto se equivoca Whisper.
 
+Descripciones en privado: para que nadie copie lo que dijeron los demás, el
+grupo queda solo para que el equipo envíe las fotos. Bajo cada foto el bot pone
+un botón que abre el chat privado con él; ahí cada persona describe la foto
+(texto o nota de voz) mientras dure su «descripción en curso» (hasta que toque
+«Terminar» o pasen 12 horas sin escribir). Esos mensajes se guardan con el
+chat_id del grupo y la foto que describen, canal = 'privado' y chat_origen = el
+chat privado; su message_id es el del chat privado, por eso la unicidad es
+(chat_id, message_id) para lo del grupo y (chat_origen, message_id) para lo
+privado.
+
+Preguntas por foto: en privado el bot pregunta una a una las preguntas del
+listado editable (preguntas_foto.py) y al final si la persona observa algo más.
+Cada respuesta guarda el código y el texto de la pregunta (pregunta_codigo,
+pregunta_texto; ADICIONAL para lo que agrega al final) y estado_respuesta:
+'respondida', 'no_sabe' o 'no_aplica'. La pregunta que toca es la primera que la
+persona no ha respondido sobre esa foto; un audio que se está transcribiendo
+(audio_en_espera) todavía no cuenta, porque si no responde a la pregunta se borra
+y se vuelve a preguntar.
+
 Cada mensaje se asocia a una foto, porque la pregunta del estudio es cuántas
 descripciones cualitativas hacen falta para relacionar lo que la gente percibe
 con los datos tomados un día concreto:
@@ -36,6 +55,15 @@ TIPOS = ("texto", "foto", "audio", "ubicacion", "consulta", "otro")
 # Una descripción toma la última ubicación que su autor compartió en el grupo
 # si es de las últimas horas.
 HORAS_UBICACION = 12
+# Una descripción en privado sigue abierta mientras la persona escriba; tras
+# este tiempo sin mensajes, lo que escriba vuelve a ser una pregunta al asistente.
+MINUTOS_DESCRIPCION = 12 * 60
+# Respuestas que no describen nada pero sí responden la pregunta.
+SIN_DESCRIPCION = ("no_sabe", "no_aplica", "no_responde")
+# Descripción detallada de cada foto por la IA (hoja «Descripción IA» del Excel):
+# los aspectos siguen las preguntas que responden las personas.
+CAMPOS_DETALLE_IA = ("general", "paisaje_y_ecosistema", "agua", "nivel_del_agua", "suelo", "vegetacion", "fauna",
+                     "cielo_y_luz", "intervencion_humana", "otros_detalles", "no_se_puede_ver")
 
 _TABLAS = (
     """
@@ -108,7 +136,39 @@ _TABLAS = (
     """,
     "CREATE INDEX IF NOT EXISTS ubicaciones_personas_autor_idx ON ubicaciones_personas (autor_id, fecha)",
     "CREATE INDEX IF NOT EXISTS observaciones_grupo_foto_idx ON observaciones_grupo (chat_id, foto_message_id)",
+    # Descripciones en privado (ver arriba): de dónde llegó el mensaje.
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS canal TEXT NOT NULL DEFAULT 'grupo'",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS chat_origen BIGINT",
+    "ALTER TABLE observaciones_grupo DROP CONSTRAINT IF EXISTS observaciones_grupo_chat_id_message_id_key",
+    "CREATE UNIQUE INDEX IF NOT EXISTS observaciones_grupo_mensaje_grupo_uidx "
+    "ON observaciones_grupo (chat_id, message_id) WHERE chat_origen IS NULL",
+    "CREATE UNIQUE INDEX IF NOT EXISTS observaciones_grupo_mensaje_privado_uidx "
+    "ON observaciones_grupo (chat_origen, message_id) WHERE chat_origen IS NOT NULL",
+    # La foto que cada persona está describiendo en su chat privado.
+    """
+    CREATE TABLE IF NOT EXISTS descripciones_en_curso (
+        autor_id BIGINT PRIMARY KEY,
+        autor_nombre TEXT NOT NULL DEFAULT '',
+        chat_privado BIGINT NOT NULL,
+        chat_id BIGINT NOT NULL REFERENCES grupos_observacion(chat_id),
+        foto_message_id BIGINT NOT NULL,
+        desde TIMESTAMPTZ NOT NULL DEFAULT now(),
+        ultima TIMESTAMPTZ NOT NULL DEFAULT now()
+    )
+    """,
     "CREATE INDEX IF NOT EXISTS observaciones_grupo_fecha_idx ON observaciones_grupo (fecha)",
+    # Preguntas por foto (ver arriba).
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS pregunta_codigo TEXT",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS pregunta_texto TEXT",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS estado_respuesta TEXT",
+    # 'persona' para la caracterización (categoría 0, una sola vez por persona): no
+    # es una descripción de la foto y no va al chat ni a las hojas de respuestas.
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS pregunta_alcance TEXT",
+    "ALTER TABLE descripciones_en_curso ADD COLUMN IF NOT EXISTS audio_en_espera INTEGER",
+    # Descripción detallada de la foto por la IA, con el modelo que la hizo y cuándo.
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS ia_detalle JSONB",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS ia_detalle_modelo TEXT",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS ia_detalle_el TIMESTAMPTZ",
 )
 _tablas_listas = False
 
@@ -143,6 +203,15 @@ class MensajeGrupo:
     longitud: float | None = None
     precision_m: float | None = None
     origen_ubicacion: str | None = None
+    # Descripciones en privado: el chat privado de donde llegó y la foto que describe.
+    canal: str = "grupo"
+    chat_origen: int | None = None
+    foto_message_id: int | None = None
+    # Preguntas por foto: a qué pregunta responde y cómo (respondida, no_sabe, no_aplica).
+    pregunta_codigo: str | None = None
+    pregunta_texto: str | None = None
+    estado_respuesta: str | None = None
+    pregunta_alcance: str | None = None
 
 
 def _json(valor: dict | None):
@@ -192,7 +261,16 @@ class ObservacionesGrupo:
             if not conn.execute("SELECT 1 FROM grupos_observacion WHERE chat_id = %s AND activo",
                                 (m.chat_id,)).fetchone():
                 return None
-            foto = self._foto_asociada(conn, m)
+            if m.chat_origen is not None:
+                # En privado la foto la dice la descripción en curso, no la conversación.
+                m.canal = "privado"
+                foto = m.foto_message_id
+                if not foto or not conn.execute(
+                        "SELECT 1 FROM observaciones_grupo WHERE chat_id = %s AND message_id = %s "
+                        "AND tipo = 'foto' AND chat_origen IS NULL", (m.chat_id, foto)).fetchone():
+                    return {"id": None, "duplicado": False, "foto_message_id": None, "sin_foto": True}
+            else:
+                foto = self._foto_asociada(conn, m)
             if m.tipo == "ubicacion" and m.latitud is not None and m.autor_id:
                 self._registrar_ubicacion(conn, m.autor_id, m.autor_nombre, m.chat_id, m.latitud, m.longitud,
                                           m.precision_m, m.origen_ubicacion or "compartida en el grupo", m.fecha)
@@ -208,18 +286,25 @@ class ObservacionesGrupo:
             # Un audio queda pendiente aunque no haya bucket: el bot lo transcribe
             # desde memoria. Solo los que tienen archivo se pueden reintentar.
             estado = "pendiente" if m.tipo == "audio" else None
+            conflicto = ("(chat_origen, message_id) WHERE chat_origen IS NOT NULL" if m.chat_origen is not None
+                         else "(chat_id, message_id) WHERE chat_origen IS NULL")
             fila = conn.execute(
                 "INSERT INTO observaciones_grupo (chat_id, message_id, fecha, autor_id, autor_nombre, tipo, texto, "
                 "estado_transcripcion, archivo, tipo_archivo, duracion_s, respuesta_a, foto_message_id, "
                 "atributos, ia_descripcion, ia_atributos, es_descripcion, latitud, longitud, precision_m, "
-                "origen_ubicacion) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                "ON CONFLICT (chat_id, message_id) DO NOTHING RETURNING id",
+                "origen_ubicacion, canal, chat_origen, pregunta_codigo, pregunta_texto, estado_respuesta, "
+                "pregunta_alcance) "
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
+                "%s, %s, %s, %s) "
+                f"ON CONFLICT {conflicto} DO NOTHING RETURNING id",
                 (m.chat_id, m.message_id, m.fecha, m.autor_id, m.autor_nombre, m.tipo, m.texto, estado,
                  archivo, m.tipo_archivo, m.duracion_s, m.respuesta_a, foto,
                  _json(m.atributos), m.ia_descripcion, _json(m.ia_atributos), m.es_descripcion,
-                 m.latitud, m.longitud, m.precision_m, m.origen_ubicacion),
+                 m.latitud, m.longitud, m.precision_m, m.origen_ubicacion, m.canal, m.chat_origen,
+                 m.pregunta_codigo, m.pregunta_texto, m.estado_respuesta, m.pregunta_alcance),
             ).fetchone()
+            if m.chat_origen is not None and m.autor_id:
+                conn.execute("UPDATE descripciones_en_curso SET ultima = now() WHERE autor_id = %s", (m.autor_id,))
         return {"id": fila[0] if fila else None, "duplicado": fila is None, "foto_message_id": foto}
 
     @staticmethod
@@ -248,6 +333,8 @@ class ObservacionesGrupo:
 
     def foto_para(self, m: MensajeGrupo) -> int | None:
         """La foto a la que se asociaría el mensaje (None si aún no hay fotos)."""
+        if m.chat_origen is not None:
+            return m.foto_message_id
         with _conexion() as conn:
             return self._foto_asociada(conn, m)
 
@@ -258,19 +345,30 @@ class ObservacionesGrupo:
             fila = conn.execute("DELETE FROM observaciones_grupo WHERE id = %s RETURNING archivo", (id_,)).fetchone()
         return fila[0] if fila else None
 
+    def borrar_privado(self, id_: int) -> str | None:
+        """Borra un mensaje enviado en privado (un audio que resultó no ser una
+        descripción). Devuelve la clave de su archivo ("" si no tenía) o None si
+        no era un mensaje privado."""
+        with _conexion() as conn:
+            fila = conn.execute("DELETE FROM observaciones_grupo WHERE id = %s AND canal = 'privado' "
+                                "RETURNING coalesce(archivo, '')", (id_,)).fetchone()
+        return fila[0] if fila else None
+
     @staticmethod
     def _foto_asociada(conn, m: MensajeGrupo) -> int | None:
         if m.tipo == "foto":
             return m.message_id
         if m.respuesta_a:
             fila = conn.execute(
-                "SELECT tipo, foto_message_id FROM observaciones_grupo WHERE chat_id = %s AND message_id = %s",
+                "SELECT tipo, foto_message_id FROM observaciones_grupo WHERE chat_id = %s AND message_id = %s "
+                "AND chat_origen IS NULL",
                 (m.chat_id, m.respuesta_a),
             ).fetchone()
             if fila:
                 return m.respuesta_a if fila[0] == "foto" else fila[1]
         fila = conn.execute(
             "SELECT message_id FROM observaciones_grupo WHERE chat_id = %s AND tipo = 'foto' AND fecha <= %s "
+            "AND chat_origen IS NULL "
             "ORDER BY fecha DESC, message_id DESC LIMIT 1",
             (m.chat_id, m.fecha),
         ).fetchone()
@@ -287,13 +385,27 @@ class ObservacionesGrupo:
             conn.execute("UPDATE observaciones_grupo SET ia_descripcion = %s, ia_atributos = %s WHERE id = %s",
                          (descripcion_, _json(atributos), id_))
 
+    def guardar_detalle(self, id_: int, detalle: dict, modelo: str) -> None:
+        with _conexion() as conn:
+            conn.execute("UPDATE observaciones_grupo SET ia_detalle = %s, ia_detalle_modelo = %s, ia_detalle_el = now() "
+                         "WHERE id = %s AND tipo = 'foto'", (_json(detalle), modelo, id_))
+
+    def fotos_sin_detalle(self, limite: int = 20) -> list[dict[str, Any]]:
+        """Fotos guardadas que todavía no tienen la descripción detallada de la IA."""
+        with _conexion() as conn:
+            filas = conn.execute(
+                "SELECT id FROM observaciones_grupo WHERE tipo = 'foto' AND chat_origen IS NULL "
+                "AND archivo IS NOT NULL AND ia_detalle IS NULL ORDER BY id LIMIT %s", (limite,)
+            ).fetchall()
+        return [{"id": f[0]} for f in filas]
+
     def datos_de_foto(self, chat_id: int, message_id: int, sitio: str, fecha: date, luz: str | None) -> bool:
         """El sitio y el día reales en que se tomó la foto (y si de día o de noche):
         con eso se compara después lo descrito con las mediciones de ese día."""
         with _conexion() as conn:
             return conn.execute(
                 "UPDATE observaciones_grupo SET dato_sitio = %s, dato_fecha = %s, dato_luz = %s "
-                "WHERE chat_id = %s AND message_id = %s AND tipo = 'foto'",
+                "WHERE chat_id = %s AND message_id = %s AND tipo = 'foto' AND chat_origen IS NULL",
                 (sitio, fecha, luz, chat_id, message_id),
             ).rowcount > 0
 
@@ -319,12 +431,21 @@ class ObservacionesGrupo:
             ).rowcount > 0
 
     def mensaje(self, chat_id: int, message_id: int) -> dict[str, Any] | None:
+        """Un mensaje del grupo."""
+        return self._mensaje("chat_id = %s AND message_id = %s AND chat_origen IS NULL", (chat_id, message_id))
+
+    def mensaje_privado(self, chat_origen: int, message_id: int) -> dict[str, Any] | None:
+        """Un mensaje que una persona envió en su chat privado con el bot."""
+        return self._mensaje("chat_origen = %s AND message_id = %s", (chat_origen, message_id))
+
+    def _mensaje(self, donde: str, valores: tuple) -> dict[str, Any] | None:
         with _conexion() as conn:
             fila = conn.execute(
                 "SELECT id, tipo, transcripcion, estado_transcripcion, transcripcion_corregida, corregida_por, "
-                "archivo IS NOT NULL, fecha, atributos, ia_atributos, ia_descripcion, dato_sitio, dato_fecha, dato_luz "
-                "FROM observaciones_grupo WHERE chat_id = %s AND message_id = %s",
-                (chat_id, message_id),
+                "archivo IS NOT NULL, fecha, atributos, ia_atributos, ia_descripcion, dato_sitio, dato_fecha, dato_luz, "
+                "canal, autor_id, pregunta_codigo, pregunta_texto, estado_respuesta, pregunta_alcance, chat_id "
+                f"FROM observaciones_grupo WHERE {donde}",
+                valores,
             ).fetchone()
         if not fila:
             return None
@@ -332,16 +453,121 @@ class ObservacionesGrupo:
                 "transcripcion_corregida": fila[4], "corregida_por": fila[5], "audio_disponible": fila[6],
                 "fecha": fila[7].isoformat(timespec="minutes"), "atributos": fila[8], "ia_atributos": fila[9],
                 "ia_descripcion": fila[10], "dato_sitio": fila[11],
-                "dato_fecha": fila[12].isoformat() if fila[12] else None, "dato_luz": fila[13]}
+                "dato_fecha": fila[12].isoformat() if fila[12] else None, "dato_luz": fila[13],
+                "canal": fila[14], "autor_id": fila[15], "pregunta_codigo": fila[16], "pregunta_texto": fila[17],
+                "estado_respuesta": fila[18], "pregunta_alcance": fila[19], "chat_id": fila[20]}
+
+    def mensaje_por_id(self, id_: int) -> dict[str, Any] | None:
+        """Un mensaje por su número de registro (para saber a qué pregunta responde un audio)."""
+        return self._mensaje("id = %s", (id_,))
 
     def corregir(self, chat_id: int, message_id: int, texto: str, por: str) -> bool:
         """Guarda la transcripción corregida por una persona; la de Whisper se conserva."""
+        return self._corregir("chat_id = %s AND message_id = %s AND chat_origen IS NULL", (chat_id, message_id),
+                              texto, por)
+
+    def corregir_registro(self, id_: int, texto: str, por: str) -> bool:
+        """Corrección que hace el equipo con el número de registro (columna «registro» del Excel)."""
+        return self._corregir("id = %s", (id_,), texto, por)
+
+    def corregir_privado(self, chat_origen: int, message_id: int, texto: str, por: str) -> bool:
+        return self._corregir("chat_origen = %s AND message_id = %s", (chat_origen, message_id), texto, por)
+
+    def _corregir(self, donde: str, valores: tuple, texto: str, por: str) -> bool:
         with _conexion() as conn:
             return conn.execute(
                 "UPDATE observaciones_grupo SET transcripcion_corregida = %s, corregida_por = %s, corregida_el = now() "
-                "WHERE chat_id = %s AND message_id = %s AND tipo = 'audio'",
-                (texto.strip() or None, por, chat_id, message_id),
+                f"WHERE {donde} AND tipo = 'audio'",
+                (texto.strip() or None, por, *valores),
             ).rowcount > 0
+
+    # ── descripciones en privado ──────────────────────────────────────────
+    def foto_por_registro(self, id_: int) -> dict[str, Any] | None:
+        """La foto del grupo con ese número de registro (el que lleva el botón
+        «Describir esta foto»), con su sitio y si el grupo sigue activo."""
+        with _conexion() as conn:
+            fila = conn.execute(
+                "SELECT o.chat_id, o.message_id, g.sitio, g.activo FROM observaciones_grupo o "
+                "JOIN grupos_observacion g USING (chat_id) "
+                "WHERE o.id = %s AND o.tipo = 'foto' AND o.chat_origen IS NULL", (id_,)
+            ).fetchone()
+        return {"chat_id": fila[0], "message_id": fila[1], "sitio": fila[2], "activo": fila[3]} if fila else None
+
+    def iniciar_descripcion(self, autor_id: int, autor_nombre: str, chat_privado: int, chat_id: int,
+                            foto: int) -> None:
+        """Desde ahora lo que la persona escriba en privado describe esa foto."""
+        with _conexion() as conn:
+            conn.execute(
+                "INSERT INTO descripciones_en_curso (autor_id, autor_nombre, chat_privado, chat_id, foto_message_id) "
+                "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (autor_id) DO UPDATE SET autor_nombre = EXCLUDED.autor_nombre, "
+                "chat_privado = EXCLUDED.chat_privado, chat_id = EXCLUDED.chat_id, "
+                "foto_message_id = EXCLUDED.foto_message_id, desde = now(), ultima = now(), audio_en_espera = NULL",
+                (autor_id, autor_nombre, chat_privado, chat_id, foto),
+            )
+
+    def descripcion_en_curso(self, autor_id: int, minutos: int = MINUTOS_DESCRIPCION) -> dict[str, Any] | None:
+        """La foto que la persona está describiendo, si escribió en los últimos `minutos`."""
+        with _conexion() as conn:
+            fila = conn.execute(
+                "SELECT d.chat_id, d.foto_message_id, g.sitio, d.desde, d.audio_en_espera FROM descripciones_en_curso d "
+                "JOIN grupos_observacion g USING (chat_id) "
+                "WHERE d.autor_id = %s AND g.activo AND d.ultima > now() - make_interval(mins => %s)",
+                (autor_id, minutos),
+            ).fetchone()
+        return ({"chat_id": fila[0], "foto": fila[1], "sitio": fila[2], "desde": fila[3].isoformat(),
+                 "audio_en_espera": fila[4]} if fila else None)
+
+    def respondidas(self, autor_id: int, chat_id: int, foto: int, excluir: int | None = None) -> set[str]:
+        """Códigos de las preguntas que la persona ya respondió sobre esa foto
+        (con «No sé» y «No aplica» incluidos). `excluir`: el audio que se está
+        transcribiendo, que aún no cuenta."""
+        with _conexion() as conn:
+            filas = conn.execute(
+                "SELECT DISTINCT pregunta_codigo FROM observaciones_grupo WHERE chat_id = %s AND foto_message_id = %s "
+                "AND autor_id = %s AND canal = 'privado' AND pregunta_codigo IS NOT NULL AND id <> %s",
+                (chat_id, foto, autor_id, excluir or 0),
+            ).fetchall()
+        return {f[0] for f in filas}
+
+    def respondidas_persona(self, autor_id: int, excluir: int | None = None) -> set[str]:
+        """Códigos que la persona ya respondió en cualquier foto (para las
+        preguntas de la persona, que se hacen una sola vez)."""
+        with _conexion() as conn:
+            filas = conn.execute(
+                "SELECT DISTINCT pregunta_codigo FROM observaciones_grupo WHERE autor_id = %s AND canal = 'privado' "
+                "AND pregunta_alcance = 'persona' AND id <> %s", (autor_id, excluir or 0),
+            ).fetchall()
+        return {f[0] for f in filas}
+
+    def esperar_audio(self, autor_id: int, id_: int) -> None:
+        """La pregunta no avanza hasta saber qué dice este audio."""
+        with _conexion() as conn:
+            conn.execute("UPDATE descripciones_en_curso SET audio_en_espera = %s WHERE autor_id = %s", (id_, autor_id))
+
+    def audio_listo(self, id_: int) -> None:
+        with _conexion() as conn:
+            conn.execute("UPDATE descripciones_en_curso SET audio_en_espera = NULL WHERE audio_en_espera = %s", (id_,))
+
+    def marcar_respuesta(self, id_: int, estado: str) -> None:
+        """Un audio en el que la persona dijo «no sé» o «no aplica»."""
+        with _conexion() as conn:
+            conn.execute("UPDATE observaciones_grupo SET estado_respuesta = %s, atributos = NULL WHERE id = %s",
+                         (estado, id_))
+
+    def terminar_descripcion(self, autor_id: int) -> dict[str, Any] | None:
+        """Cierra la descripción en curso. Devuelve cuántos mensajes guardó la
+        persona sobre esa foto desde que la abrió y de qué foto era (None si no
+        había ninguna)."""
+        with _conexion() as conn:
+            fila = conn.execute("DELETE FROM descripciones_en_curso WHERE autor_id = %s "
+                                "RETURNING chat_id, foto_message_id, desde", (autor_id,)).fetchone()
+            if not fila:
+                return None
+            mensajes = conn.execute(
+                "SELECT count(*) FROM observaciones_grupo WHERE chat_id = %s AND foto_message_id = %s "
+                "AND autor_id = %s AND canal = 'privado' AND creado >= %s", (fila[0], fila[1], autor_id, fila[2])
+            ).fetchone()[0]
+        return {"mensajes": mensajes, "chat_id": fila[0], "foto": fila[1]}
 
     def audios_pendientes(self, limite: int = 50) -> list[dict[str, Any]]:
         with _conexion() as conn:
@@ -398,7 +624,9 @@ class ObservacionesGrupo:
                 "o.autor_id, o.autor_nombre, o.tipo, o.texto, o.transcripcion, o.estado_transcripcion, "
                 "o.foto_message_id, o.archivo IS NOT NULL, o.transcripcion_corregida, o.archivo, "
                 "o.atributos, o.ia_descripcion, o.ia_atributos, o.dato_sitio, o.dato_fecha, o.dato_luz, "
-                "o.es_descripcion, o.latitud, o.longitud, o.precision_m, o.origen_ubicacion "
+                "o.es_descripcion, o.latitud, o.longitud, o.precision_m, o.origen_ubicacion, o.canal, "
+                "o.pregunta_codigo, o.pregunta_texto, o.estado_respuesta, "
+                "o.ia_detalle, o.ia_detalle_modelo, o.ia_detalle_el AT TIME ZONE 'America/Bogota', o.pregunta_alcance "
                 f"FROM observaciones_grupo o JOIN grupos_observacion g USING (chat_id) {donde} "
                 "ORDER BY o.fecha, o.message_id",
                 valores,
@@ -411,7 +639,11 @@ class ObservacionesGrupo:
             "atributos": f[15], "ia_descripcion": f[16], "ia_atributos": f[17], "dato_sitio": f[18],
             "dato_fecha": f[19].isoformat() if f[19] else None, "dato_luz": f[20],
             "es_descripcion": f[21], "latitud": f[22], "longitud": f[23], "precision_m": f[24],
-            "origen_ubicacion": f[25],
+            "origen_ubicacion": f[25], "canal": f[26],
+            "pregunta_codigo": f[27], "pregunta_texto": f[28], "estado_respuesta": f[29],
+            "ia_detalle": f[30], "ia_detalle_modelo": f[31],
+            "ia_detalle_el": f[32].isoformat(timespec="minutes") if f[32] else None,
+            "pregunta_alcance": f[33],
         } for f in filas]
 
 
@@ -426,14 +658,18 @@ def resumir(filas: list[dict[str, Any]]) -> dict[str, Any]:
     """Por foto: cuántas descripciones y cuántas personas distintas, y las
     descripciones. Una descripción es un mensaje de texto o un audio con
     contenido. El pie de la foto no cuenta (lo escribe quien la envía) y se
-    devuelve aparte; las preguntas al bot tampoco."""
+    devuelve aparte; las preguntas al bot tampoco, ni los «No sé» y «No aplica»
+    (se cuentan aparte)."""
     fotos: dict[Any, dict[str, Any]] = {}
     for f in filas:
-        if f["tipo"] == "ubicacion":
-            continue  # la ubicación va en el Excel; no es una descripción de una foto
+        if f["tipo"] == "ubicacion" or f.get("pregunta_alcance") == "persona":
+            # La ubicación va en el Excel; la caracterización de la persona (datos
+            # personales) solo en su hoja del Excel: ninguna es una descripción de la foto.
+            continue
         clave = (f["chat_id"], f["foto"])
         grupo = fotos.setdefault(clave, {"sitio": f["sitio"], "foto": f["foto"], "enviada": None,
-                                         "descripciones": [], "personas": set(), "audios_pendientes": 0})
+                                         "descripciones": [], "personas": set(), "audios_pendientes": 0,
+                                         "no_sabe": 0, "no_aplica": 0, "no_responde": 0})
         if f["tipo"] == "foto" and f["mensaje"] == f["foto"]:
             grupo["enviada"] = f["fecha"]
             grupo["pie"] = f["texto"]
@@ -445,10 +681,15 @@ def resumir(filas: list[dict[str, Any]]) -> dict[str, Any]:
         if f["tipo"] == "audio" and f["estado_transcripcion"] == "pendiente":
             grupo["audios_pendientes"] += 1
         texto = descripcion(f)
+        if f.get("estado_respuesta") in SIN_DESCRIPCION:
+            grupo[f["estado_respuesta"]] += 1
+            continue
         if texto and f["tipo"] in ("texto", "audio") and f.get("es_descripcion") is False:
             grupo["otros_mensajes"] = grupo.get("otros_mensajes", 0) + 1
         elif texto and f["tipo"] in ("texto", "audio"):
             entrada = {"fecha": f["fecha"], "autor": f["autor"], "tipo": f["tipo"], "texto": texto}
+            if f.get("pregunta_codigo"):
+                entrada["pregunta"] = f["pregunta_codigo"]
             if f["tipo"] == "audio":
                 entrada["transcripcion_revisada"] = bool(f.get("transcripcion_corregida"))
             if f.get("atributos"):
@@ -467,6 +708,8 @@ def resumir(filas: list[dict[str, Any]]) -> dict[str, Any]:
             "personas": len(g["personas"]),
             "audios_por_transcribir": g["audios_pendientes"],
             "otros_mensajes_no_descripcion": g.get("otros_mensajes", 0),
+            "respuestas_no_se": g["no_sabe"],
+            "respuestas_no_aplica": g["no_aplica"],
             "foto_del_dia": g.get("datos"),
             "lo_que_ve_la_ia": (g.get("ia") or {}).get("descripcion"),
             "atributos_que_ve_la_ia": (g.get("ia") or {}).get("atributos"),

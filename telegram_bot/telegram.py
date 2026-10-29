@@ -42,6 +42,17 @@ class Telegram:
                 cuerpo["reply_markup"] = teclado
             self._llamar("sendMessage", json=cuerpo)
 
+    def copiar(self, chat_id: int, desde_chat: int, message_id: int, teclado: dict | None = None) -> None:
+        """Copia un mensaje (una foto del grupo) a otro chat, sin «reenviado de»."""
+        cuerpo = {"chat_id": chat_id, "from_chat_id": desde_chat, "message_id": message_id}
+        if teclado:
+            cuerpo["reply_markup"] = teclado
+        self._llamar("copyMessage", json=cuerpo)
+
+    def enviar_foto(self, chat_id: int, contenido: bytes, leyenda: str = "") -> None:
+        self._llamar("sendPhoto", data={"chat_id": chat_id, "caption": leyenda},
+                     files={"photo": ("foto.jpg", contenido)})
+
     def enviar_archivo(self, chat_id: int, nombre: str, contenido: bytes, leyenda: str) -> None:
         self._llamar("sendDocument", data={"chat_id": chat_id, "caption": leyenda},
                      files={"document": (nombre, contenido)})

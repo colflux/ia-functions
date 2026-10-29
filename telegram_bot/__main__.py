@@ -33,9 +33,11 @@ def main() -> int:
         modelo = os.environ.get("WHISPER_MODELO", "small").strip()
         transcriptor = None
         if modelo:
+            # Al terminar un audio, el registro guarda la transcripción y, si el
+            # audio llegó en privado, sigue con la pregunta (sin mostrarle la transcripción).
             transcriptor = Transcriptor(modelo, os.environ.get("WHISPER_CARPETA", "/modelos"),
                                         int(os.environ.get("WHISPER_HILOS", "2")),
-                                        lambda id_, texto, estado: cliente.transcripcion(id_, texto, estado))
+                                        lambda id_, texto, estado: grupos.transcrito(id_, texto, estado))
         grupos = RegistroGrupos(telegram, cliente, transcriptor)
     else:
         logging.info("Sin GRUPOS_TOKEN: los grupos de observación están desactivados.")

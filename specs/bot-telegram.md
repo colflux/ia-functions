@@ -38,18 +38,45 @@ necesita aprobación ni número de teléfono. Decisiones:
 - Cada persona es un usuario del asistente (`telegram-<id>`): el asistente conserva
   su historial igual que en la web.
 - `/start` y `/ayuda` muestran qué se puede preguntar y dónde subir archivos.
-- Chats privados: responde todo. Grupos: solo si lo mencionan (`@bot`) o le responden
-  a un mensaje suyo.
+- Chats privados: responde todo, salvo mientras la persona describe una foto de un
+  grupo de observación (ver abajo). Grupos: solo si lo mencionan (`@bot`) o le
+  responden a un mensaje suyo.
 - Las respuestas van en texto plano. Si pasan de 4.096 caracteres, se parten por
   líneas.
 - Las fuentes que se pueden abrir (páginas y PDF de la wiki) se agregan como enlaces.
   Los archivos subidos no se enlazan porque su descarga exige sesión.
-- Fotos, documentos, audios o ubicaciones: responde que por ahora solo atiende texto
-  y da el enlace a la plataforma.
+- Fotos, documentos, audios o ubicaciones fuera de una descripción: responde que por
+  ahora solo atiende texto y da el enlace a la plataforma. Una ubicación compartida
+  en privado se guarda para las descripciones (ver `grupos-observacion.md`).
 - Excel: si la respuesta trae `descargas`, pide el enlace a `/descargas/excel`, baja
   el archivo y lo envía con el número de filas.
 - Los mensajes de un mismo chat se responden en orden, y hasta 4 chats se atienden a
   la vez.
+
+### Grupos de observación y descripciones en privado
+
+El detalle está en `specs/grupos-observacion.md`. Lo que cambia en el bot:
+
+- En un grupo registrado con `/observacion <sitio>` (comandos solo para
+  administradores) el bot guarda en silencio las fotos que envía el equipo y pone
+  bajo cada una el botón «✍️ Describir esta foto». Lo demás que se escriba en el
+  grupo no se guarda.
+- El botón abre el chat privado (`/start f<registro>`). Desde ahí, y hasta
+  «✅ Terminar» (`/terminar`) o 12 horas sin escribir, lo que la persona escriba o
+  grabe en privado es su respuesta a las preguntas del instrumento, una por una,
+  y no una pregunta al asistente. Después el chat vuelve a ser el asistente.
+- Orden en el chat privado: ubicación compartida → `/ubicacion` → `/start f<registro>`
+  → «✅ Terminar» → `/transcripcion` y `/corregir` → respuesta a la descripción en
+  curso → asistente.
+- Las notas de voz se transcriben con Whisper en el mismo servicio. Quien describe
+  no ve la transcripción; el equipo la revisa con `/transcripcion <registro>` y
+  `/corregir <registro> <texto>` en su chat privado con el bot (solo administradores
+  del grupo de ese registro).
+- Una vez al arrancar y luego cada día, el bot pide a la api retomar los audios sin
+  transcribir, borrar los audios vencidos y completar la descripción detallada de
+  las fotos que no la tengan.
+- Lo de los grupos no se consulta desde Telegram: el asistente solo lo muestra con
+  la sesión iniciada en la plataforma.
 
 ### Límites y errores
 
@@ -68,7 +95,10 @@ necesita aprobación ni número de teléfono. Decisiones:
 | `telegram_bot/bot.py` | Atención de mensajes, límite, fuentes y Excel |
 | `telegram_bot/telegram.py` | Cliente mínimo de la API de bots |
 | `telegram_bot/asistente.py` | Cliente de `/chat` y `/descargas/excel` |
-| `docker-compose.yml`, `.env.example` | Servicio `telegram` y sus variables |
+| `telegram_bot/registro_grupos.py` | Grupos de observación, descripciones y preguntas en privado |
+| `telegram_bot/grupos.py` | Cliente de las rutas internas `/grupos` (con `GRUPOS_TOKEN`) |
+| `telegram_bot/transcriptor.py` | Transcripción de notas de voz con Whisper |
+| `docker-compose.yml`, `.env.example` | Servicio `telegram` y sus variables (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_MENSAJES_POR_HORA`, `GRUPOS_TOKEN`, `WHISPER_MODELO`, `WHISPER_HILOS`) |
 
 ## Plan por fases
 
