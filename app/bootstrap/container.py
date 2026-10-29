@@ -81,7 +81,8 @@ def get_tool_registry() -> ToolRegistry:
         ArchivosSubidosToolProvider(PgVectorStore(), get_depurador()),
         MedicionesChatToolProvider(BackendUserDirectory(settings.backend_api_base_url),
                                    BackendDataModel(settings.backend_api_base_url)),
-        ObservacionesGrupoToolProvider(get_observaciones_grupo()),
+        ObservacionesGrupoToolProvider(get_observaciones_grupo(),
+                                       BackendUserDirectory(settings.backend_api_base_url)),
     ]
     for name, url in parsed_mcp_servers().items():
         try:

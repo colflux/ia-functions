@@ -6,13 +6,14 @@ un Excel, se envía como archivo. En esta versión no se suben archivos ni se
 registran mediciones: eso exige una cuenta de COLFLUX y se hace desde la web.
 """
 import logging
+import re
 import threading
 import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
 from telegram_bot.asistente import Asistente
-from telegram_bot.registro_grupos import RegistroGrupos
+from telegram_bot.registro_grupos import TERMINAR, RegistroGrupos
 from telegram_bot.telegram import Telegram
 
 logger = logging.getLogger("telegram_bot")
@@ -120,6 +121,24 @@ class Bot:
             if texto.split(" ")[0].split("@")[0] in ("/ubicacion",) or texto == "/start ubicacion":
                 self._grupos.pedir_ubicacion(chat)
                 return
+            # Descripciones de las fotos de los grupos: se hacen aquí, en privado,
+            # para que nadie vea ni copie lo que describieron los demás.
+            orden, _, argumento = texto.partition(" ")
+            orden = orden.split("@")[0].lower()
+            if orden == "/start" and re.fullmatch(r"f\d+", argumento.strip()):
+                self._grupos.abrir_descripcion(mensaje, int(argumento.strip()[1:]))
+                return
+            if orden == "/terminar" or texto == TERMINAR:
+                self._grupos.terminar(mensaje)
+                return
+            if orden in ("/transcripcion", "/corregir"):
+                self._grupos.revisar_privado(mensaje, orden, argumento)
+                return
+            if not orden.startswith("/"):
+                en_curso = self._grupos.en_curso(persona)
+                if en_curso:
+                    self._grupos.guardar_privado(mensaje, en_curso)
+                    return
 
         if not privado and self._grupos:
             orden, _, argumento = texto.partition(" ")

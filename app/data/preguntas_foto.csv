@@ -1,0 +1,48 @@
+codigo;orden;alcance;categoria;pregunta;origen_en_el_instrumento;activa
+C0-NOMBRE;1;persona;Caracterización individual;¿Cuál es su nombre?;Cat. 0 · Nombre;si
+C0-UBICACION;2;persona;Caracterización individual;¿Dónde vive? (vereda, municipio o lugar);Cat. 0 · Ubicación;si
+C0-GENERO;3;persona;Caracterización individual;¿Con qué género se identifica?;Cat. 0 · Género;si
+C0-ETNIA;4;persona;Caracterización individual;¿Cuál es su pertenencia étnica?;Cat. 0 · Pertenencia étnica;si
+C0-ESTUDIO;5;persona;Caracterización individual;¿Cuál es su nivel de estudio?;Cat. 0 · Nivel de estudio;si
+C0-RELACION;6;persona;Caracterización individual;¿Cuál es su relación con el ecosistema? (por ejemplo: pescadores, mujeres, cazadores);Cat. 0 · Relación con el ecosistema;si
+C0-ACT-ECONOMICA;7;persona;Caracterización individual;¿Cuál es su actividad económica?;Cat. 0 · Actividad económica;si
+C0-ACTIVIDADES;8;persona;Caracterización individual;¿Cuáles son sus principales actividades?;Cat. 0 · Principales actividades;si
+C0-EDAD;9;persona;Caracterización individual;¿Cuántos años tiene?;Cat. 0 · Edad;si
+C0-TIEMPO;10;persona;Caracterización individual;¿Cuánto tiempo lleva viviendo en el lugar?;Cat. 0 · Tiempo que lleva viviendo en el lugar;si
+C1-1;11;foto;Primeras aproximaciones a los ecosistemas;Por favor, describa de manera breve el ecosistema de la foto a una persona como yo, que no vive en este lugar.;Cat. 1 · P1;si
+C1-2;12;foto;Primeras aproximaciones a los ecosistemas;Si tuviera que explicarle cómo funciona este ecosistema a un niño o una niña, ¿qué le contaría?;Cat. 1 · P2;si
+C1-3;13;foto;Primeras aproximaciones a los ecosistemas;¿Qué nombres y qué características tienen las zonas húmedas en esta región?;Cat. 1 · P3;si
+C1-4;14;foto;Primeras aproximaciones a los ecosistemas;¿De cuántos y cuáles recursos depende su actividad económica o subsistencia, y qué otros beneficios (más allá de estos recursos) considera que el ecosistema le brinda?;Cat. 1 · P4;si
+C1-5;15;foto;Primeras aproximaciones a los ecosistemas;¿Hay lugares o recursos del ecosistema a los que actualmente le sea difícil acceder (ya sea por restricciones, permisos u otras limitaciones, o según la época del año) y ha notado cambios en esta facilidad de acceso en los últimos 3 a 5 años?;Cat. 1 · P5;si
+C2-1;16;foto;Percepciones sobre el cambio;Cada vez decimos más que los ecosistemas y los recursos naturales no son como antes. ¿Cómo explicaría en qué ha cambiado este ecosistema y cómo lo ha notado usted?;Cat. 2 · P1;si
+C2-2;17;foto;Percepciones sobre el cambio;¿Qué ha observado que le pasa al aire o al suelo cuando cambia un área para hacer actividades productivas, por ejemplo, cuando se tumba un pedazo de bosque para meter ganado o sembrar?;Cat. 2 · P2;si
+C2-3;18;foto;Percepciones sobre el cambio;¿Cómo era el uso del terreno hace 10 años con relación a las temporadas de lluvia y sequía?;Cat. 2 · P3;si
+C2-4;19;foto;Percepciones sobre el cambio;Cuente cómo los cambios en el clima afectan las actividades diarias que usted realiza.;Cat. 2 · P4;si
+C3-1;20;foto;Agua;¿Cómo describiría el olor, el color y la turbidez del agua en las zonas inundables, en las diferentes épocas del año (lluvia/sequía)?;Cat. 3 · P1;si
+C3-2;21;foto;Agua;¿Qué fenómenos generan cambios en las características del agua (como olor, color y turbidez) en zonas inundables?;Cat. 3 · P2;si
+C3-3;22;foto;Agua;¿Ha identificado algún tipo de material disuelto o espesor particular en el agua de las zonas inundables en las diferentes épocas del año (lluvia/sequía)? Si es así, describa lo que ha observado.;Cat. 3 · P3;si
+C3-4;23;foto;Agua;¿De qué manera varía el nivel del agua en las zonas inundables, en las diferentes épocas del año (lluvia/sequía)?;Cat. 3 · P4;si
+C3-5;24;foto;Agua;¿Considera que ha variado la disponibilidad de agua en las zonas inundables durante los últimos años? ¿Por qué?;Cat. 3 · P5;si
+C4-1;25;foto;Suelo;¿En cuáles suelos se puede sembrar y en cuáles no? Cuéntenos de su color, textura y olor.;Cat. 4 · P1;si
+C4-2;26;foto;Suelo;¿Qué actividades cree que pueden cambiar el suelo?;Cat. 4 · P2;si
+C4-3;27;foto;Suelo;¿Cómo cambian los suelos durante las temporadas de lluvia y las temporadas secas?;Cat. 4 · P3;si
+C4-4;28;foto;Suelo;¿Cómo siente el suelo bajo sus pies cuando camina (blando, firme, esponjoso, pegajoso, seco)?;Cat. 4 · P4;si
+C4-5;29;foto;Suelo;¿Qué riesgos y beneficios generan los suelos que se inundan frecuentemente?;Cat. 4 · P5;si
+C5V-1;30;foto;Biodiversidad vegetal;¿Qué tipo de plantas son las más comunes en los ecosistemas inundables que lo rodean?;Cat. 5 vegetal · P1;si
+C5V-2;31;foto;Biodiversidad vegetal;¿Cómo varían los aspectos físicos de estas plantas dependiendo de los lugares y las épocas del año?;Cat. 5 vegetal · P2;si
+C5V-3;32;foto;Biodiversidad vegetal;¿Cuáles plantas ve con más o menos frecuencia que antes?;Cat. 5 vegetal · P3;si
+C5V-4;33;foto;Biodiversidad vegetal;¿Hay alguna planta cuya presencia o cambios físicos le indiquen a usted que el ecosistema está bien, mal o que algo ha cambiado? ¿De qué manera?;Cat. 5 vegetal · P4;si
+C5A-1;34;foto;Biodiversidad animal;¿Qué animales ha visto que transitan o se acercan a los lugares inundables en su territorio?;Cat. 5 animal · P1;si
+C5A-2;35;foto;Biodiversidad animal;¿Qué actividades ha observado que realizan los animales cuando se encuentran en estos lugares?;Cat. 5 animal · P2;si
+C5A-3;36;foto;Biodiversidad animal;¿Cómo cambian la presencia y las actividades de estos animales durante las distintas épocas del año?;Cat. 5 animal · P3;si
+C5A-4;37;foto;Biodiversidad animal;¿Cuáles animales ve con más o menos frecuencia que antes?;Cat. 5 animal · P4;si
+C5A-5;38;foto;Biodiversidad animal;¿Hay algún animal cuya presencia le indique a usted que el ecosistema está bien, mal o que algo ha cambiado? ¿De qué manera?;Cat. 5 animal · P5;si
+C6-1;39;foto;Carbono;¿Qué conocimientos, prácticas o acciones de la comunidad considera que ayudan a conservar los bosques, los suelos y el agua de este territorio?;Cat. 6 · P1;si
+C6-2;40;foto;Carbono;Desde su experiencia, ¿qué relación puede existir entre los árboles, el suelo, el agua y el aire?;Cat. 6 · P2;si
+C6-3;41;foto;Carbono;¿Qué actividades o cambios del territorio considera que pueden afectar los árboles, el suelo o el agua?;Cat. 6 · P3;si
+ECO-1;101;foto;Ecosistema;Describe brevemente el lugar que ves en la foto a una persona que nunca ha estado allí.;Cat. 1 · P1 (redacción de la prueba con 6 preguntas);no
+AGUA-1;102;foto;Agua;¿Cómo se ve el agua? Cuéntanos su color, si está clara o turbia y si tiene algo encima o flotando (espuma, burbujas, hojas, una capa). Si conoces el lugar, ¿a qué huele?;Cat. 3 · P1 y P3 (prueba con 6 preguntas);no
+AGUA-2;103;foto;Agua;¿Cómo ves el nivel del agua: alto, normal o bajo? ¿Hay zonas inundadas, encharcadas o secas?;Cat. 3 · P4 (prueba con 6 preguntas);no
+SUELO-1;104;foto;Suelo;¿Cómo se ve el suelo? ¿De qué color es y cómo crees que se siente al pisarlo (blando, firme, esponjoso, pegajoso, seco)?;Cat. 4 · P1 y P4 (prueba con 6 preguntas);no
+PLANTAS-1;105;foto;Biodiversidad vegetal;¿Qué plantas ves y cómo están: verdes, secas, altas, bajas, con flores o frutos?;Cat. 5 vegetal · P1 y P2 (prueba con 6 preguntas);no
+ANIMALES-1;106;foto;Biodiversidad animal;¿Ves animales o rastros de ellos (huellas, nidos, excrementos)? ¿Cuáles son y qué están haciendo?;Cat. 5 animal · P1 y P2 (prueba con 6 preguntas);no

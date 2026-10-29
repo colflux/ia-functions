@@ -57,5 +57,38 @@ class Grupos:
     def transcripcion(self, id_: int, texto: str | None, estado: str) -> dict:
         return self._ok(self._http.post(f"{self._url}/transcripcion", json={"id": id_, "texto": texto, "estado": estado}))
 
+    # ── descripciones en privado ──────────────────────────────────────────
+    def iniciar_descripcion(self, autor_id: int, autor_nombre: str, chat_privado: int, foto: int) -> dict:
+        respuesta = self._http.post(f"{self._url}/privado/descripcion", json={
+            "autor_id": autor_id, "autor_nombre": autor_nombre, "chat_privado": chat_privado, "foto": foto})
+        if respuesta.status_code in (404, 409):
+            return {"ok": False, "motivo": respuesta.json().get("detail", "")}
+        return self._ok(respuesta)
+
+    def descripcion_en_curso(self, autor_id: int) -> dict:
+        return self._ok(self._http.get(f"{self._url}/privado/descripcion/{autor_id}"))
+
+    def terminar_descripcion(self, autor_id: int) -> dict:
+        return self._ok(self._http.delete(f"{self._url}/privado/descripcion/{autor_id}"))
+
+    def mensaje_privado(self, chat_origen: int, message_id: int) -> dict:
+        return self._ok(self._http.get(f"{self._url}/privado/{chat_origen}/mensajes/{message_id}"))
+
+    def corregir_privado(self, chat_origen: int, message_id: int, texto: str, por: str) -> dict:
+        return self._ok(self._http.post(f"{self._url}/privado/{chat_origen}/mensajes/{message_id}/correccion",
+                                        json={"texto": texto, "por": por}))
+
+    def detallar_fotos(self) -> dict:
+        return self._ok(self._http.post(f"{self._url}/fotos/detallar"))
+
+    def registro(self, id_: int) -> dict | None:
+        respuesta = self._http.get(f"{self._url}/registros/{id_}")
+        if respuesta.status_code == 404:
+            return None
+        return self._ok(respuesta)
+
+    def corregir_registro(self, id_: int, texto: str, por: str) -> dict:
+        return self._ok(self._http.post(f"{self._url}/registros/{id_}/correccion", json={"texto": texto, "por": por}))
+
     def depurar_audios(self) -> dict:
         return self._ok(self._http.post(f"{self._url}/depurar-audios"))
