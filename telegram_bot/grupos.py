@@ -65,6 +65,13 @@ class Grupos:
             return {"ok": False, "motivo": respuesta.json().get("detail", "")}
         return self._ok(respuesta)
 
+    def corregir_anterior(self, autor_id: int) -> dict:
+        return self._ok(self._http.post(f"{self._url}/privado/descripcion/{autor_id}/corregir-anterior"))
+
+    def revision(self, autor_id: int, accion: str, numero: int | None = None) -> dict:
+        return self._ok(self._http.post(f"{self._url}/privado/descripcion/{autor_id}/revision",
+                                        json={"accion": accion, "numero": numero}))
+
     def descripcion_en_curso(self, autor_id: int) -> dict:
         return self._ok(self._http.get(f"{self._url}/privado/descripcion/{autor_id}"))
 

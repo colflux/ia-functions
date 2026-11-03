@@ -85,7 +85,10 @@ Esta primera fase solo recoge y ordena; la relación con los datos es la fase 2.
 El grupo queda solo para que el equipo envíe las fotos y para reunir a quienes
 participan. Se recomienda configurar en Telegram (Permisos del grupo) que los
 miembros no puedan enviar mensajes; de todos modos el bot solo guarda, del
-grupo, las fotos de los administradores.
+grupo, las fotos de los administradores. **Antes, el bot debe ser administrador
+del grupo**: si es un miembro más, al quitar ese permiso tampoco puede escribir
+y no aparece el botón bajo las fotos (Telegram responde «not enough rights to
+send text messages»). El mensaje de registro lo dice en ese orden.
 
 1. Al guardar una foto, el bot responde a ella con el botón **«✍️ Describir
    esta foto»**, un enlace `t.me/<bot>?start=f<registro>` (el número de
@@ -203,6 +206,35 @@ preguntas adaptadas a la foto: quedan en el listado como inactivas).
      Texto ajustado en celdas anchas.
    - **Preguntas:** el listado (también las inactivas), la pregunta final, las
      respondidas que ya no están en el listado y la versión del instrumento.
+
+## Corregir respuestas
+
+Por si alguien toca un botón sin querer o se equivoca al responder:
+
+1. **«↩️ Corregir la anterior»** (botón en cada pregunta): el bot muestra la última
+   pregunta que respondió, con su respuesta anterior, y la vuelve a hacer. La
+   respuesta nueva reemplaza a la anterior y la persona sigue donde iba. También
+   sirve para la caracterización.
+2. **Al terminar** («✅ Terminar», o «no» / «nada más» en la pregunta final) el bot
+   pregunta «¿quieres cambiar alguna de tus respuestas?»:
+   - «✏️ Sí, cambiar una respuesta» → lista numerada de sus respuestas (las de esa
+     foto y las de la caracterización), con lo que respondió; escribe el número,
+     el bot repite esa pregunta y la responde de nuevo (texto, nota de voz, «No sé»,
+     «No aplica» o «Prefiero no responder»). Después: «¿Quieres cambiar otra?».
+   - «✅ No, terminar» → cierra.
+   Lo agregado al final («¿Observas algo más…?») no está en la lista: se puede
+   agregar más, no reemplazar.
+3. De una nota de voz la lista y el recordatorio muestran «(nota de voz)», nunca
+   la transcripción. Una nota de voz que corrige solo reemplaza a la anterior si al
+   transcribirla responde la pregunta; si no, se borra y se repite la pregunta.
+4. **No se borra nada:** la respuesta anterior queda en la base con
+   `reemplazada_por` = el registro de la nueva (y `es_correccion` en la nueva). El
+   chat y el Excel solo muestran la vigente.
+5. Estado en `descripciones_en_curso`: `etapa` (`corrigiendo_anterior`,
+   `ofrecer_cambio`, `eligiendo`, `corrigiendo`) y `revisando` (el código que
+   corrige). Rutas: `POST /grupos/privado/descripcion/{persona}/corregir-anterior` y
+   `POST /grupos/privado/descripcion/{persona}/revision` (`accion`: ofrecer, listar,
+   elegir con `numero`, seguir).
 
 ## Atributos del sitio, descripción de la IA y ubicación
 

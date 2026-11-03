@@ -164,6 +164,15 @@ _TABLAS = (
     # 'persona' para la caracterización (categoría 0, una sola vez por persona): no
     # es una descripción de la foto y no va al chat ni a las hojas de respuestas.
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS pregunta_alcance TEXT",
+    # Corrección de respuestas: la respuesta nueva marca a las anteriores de la misma
+    # pregunta con su id (reemplazada_por). No se borra nada: las reemplazadas quedan
+    # en la base pero no salen en el chat ni en el Excel.
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS reemplazada_por INTEGER",
+    "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS es_correccion BOOLEAN",
+    # En qué parte va la persona: NULL (preguntas), 'corrigiendo_anterior',
+    # 'ofrecer_cambio', 'eligiendo' o 'corrigiendo'; revisando = código que corrige.
+    "ALTER TABLE descripciones_en_curso ADD COLUMN IF NOT EXISTS etapa TEXT",
+    "ALTER TABLE descripciones_en_curso ADD COLUMN IF NOT EXISTS revisando TEXT",
     "ALTER TABLE descripciones_en_curso ADD COLUMN IF NOT EXISTS audio_en_espera INTEGER",
     # Descripción detallada de la foto por la IA, con el modelo que la hizo y cuándo.
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS ia_detalle JSONB",
@@ -212,6 +221,7 @@ class MensajeGrupo:
     pregunta_texto: str | None = None
     estado_respuesta: str | None = None
     pregunta_alcance: str | None = None
+    es_correccion: bool | None = None
 
 
 def _json(valor: dict | None):
@@ -293,15 +303,15 @@ class ObservacionesGrupo:
                 "estado_transcripcion, archivo, tipo_archivo, duracion_s, respuesta_a, foto_message_id, "
                 "atributos, ia_descripcion, ia_atributos, es_descripcion, latitud, longitud, precision_m, "
                 "origen_ubicacion, canal, chat_origen, pregunta_codigo, pregunta_texto, estado_respuesta, "
-                "pregunta_alcance) "
+                "pregunta_alcance, es_correccion) "
                 "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, "
-                "%s, %s, %s, %s) "
+                "%s, %s, %s, %s, %s) "
                 f"ON CONFLICT {conflicto} DO NOTHING RETURNING id",
                 (m.chat_id, m.message_id, m.fecha, m.autor_id, m.autor_nombre, m.tipo, m.texto, estado,
                  archivo, m.tipo_archivo, m.duracion_s, m.respuesta_a, foto,
                  _json(m.atributos), m.ia_descripcion, _json(m.ia_atributos), m.es_descripcion,
                  m.latitud, m.longitud, m.precision_m, m.origen_ubicacion, m.canal, m.chat_origen,
-                 m.pregunta_codigo, m.pregunta_texto, m.estado_respuesta, m.pregunta_alcance),
+                 m.pregunta_codigo, m.pregunta_texto, m.estado_respuesta, m.pregunta_alcance, m.es_correccion),
             ).fetchone()
             if m.chat_origen is not None and m.autor_id:
                 conn.execute("UPDATE descripciones_en_curso SET ultima = now() WHERE autor_id = %s", (m.autor_id,))
@@ -352,6 +362,8 @@ class ObservacionesGrupo:
         with _conexion() as conn:
             fila = conn.execute("DELETE FROM observaciones_grupo WHERE id = %s AND canal = 'privado' "
                                 "RETURNING coalesce(archivo, '')", (id_,)).fetchone()
+            if fila:
+                conn.execute("UPDATE observaciones_grupo SET reemplazada_por = NULL WHERE reemplazada_por = %s", (id_,))
         return fila[0] if fila else None
 
     @staticmethod
@@ -443,7 +455,8 @@ class ObservacionesGrupo:
             fila = conn.execute(
                 "SELECT id, tipo, transcripcion, estado_transcripcion, transcripcion_corregida, corregida_por, "
                 "archivo IS NOT NULL, fecha, atributos, ia_atributos, ia_descripcion, dato_sitio, dato_fecha, dato_luz, "
-                "canal, autor_id, pregunta_codigo, pregunta_texto, estado_respuesta, pregunta_alcance, chat_id "
+                "canal, autor_id, pregunta_codigo, pregunta_texto, estado_respuesta, pregunta_alcance, chat_id, "
+                "foto_message_id, es_correccion, texto "
                 f"FROM observaciones_grupo WHERE {donde}",
                 valores,
             ).fetchone()
@@ -455,7 +468,8 @@ class ObservacionesGrupo:
                 "ia_descripcion": fila[10], "dato_sitio": fila[11],
                 "dato_fecha": fila[12].isoformat() if fila[12] else None, "dato_luz": fila[13],
                 "canal": fila[14], "autor_id": fila[15], "pregunta_codigo": fila[16], "pregunta_texto": fila[17],
-                "estado_respuesta": fila[18], "pregunta_alcance": fila[19], "chat_id": fila[20]}
+                "estado_respuesta": fila[18], "pregunta_alcance": fila[19], "chat_id": fila[20],
+                "foto": fila[21], "es_correccion": fila[22], "texto": fila[23]}
 
     def mensaje_por_id(self, id_: int) -> dict[str, Any] | None:
         """Un mensaje por su número de registro (para saber a qué pregunta responde un audio)."""
@@ -501,7 +515,8 @@ class ObservacionesGrupo:
                 "INSERT INTO descripciones_en_curso (autor_id, autor_nombre, chat_privado, chat_id, foto_message_id) "
                 "VALUES (%s, %s, %s, %s, %s) ON CONFLICT (autor_id) DO UPDATE SET autor_nombre = EXCLUDED.autor_nombre, "
                 "chat_privado = EXCLUDED.chat_privado, chat_id = EXCLUDED.chat_id, "
-                "foto_message_id = EXCLUDED.foto_message_id, desde = now(), ultima = now(), audio_en_espera = NULL",
+                "foto_message_id = EXCLUDED.foto_message_id, desde = now(), ultima = now(), audio_en_espera = NULL, "
+                "etapa = NULL, revisando = NULL",
                 (autor_id, autor_nombre, chat_privado, chat_id, foto),
             )
 
@@ -509,13 +524,68 @@ class ObservacionesGrupo:
         """La foto que la persona está describiendo, si escribió en los últimos `minutos`."""
         with _conexion() as conn:
             fila = conn.execute(
-                "SELECT d.chat_id, d.foto_message_id, g.sitio, d.desde, d.audio_en_espera FROM descripciones_en_curso d "
+                "SELECT d.chat_id, d.foto_message_id, g.sitio, d.desde, d.audio_en_espera, d.etapa, d.revisando "
+                "FROM descripciones_en_curso d "
                 "JOIN grupos_observacion g USING (chat_id) "
                 "WHERE d.autor_id = %s AND g.activo AND d.ultima > now() - make_interval(mins => %s)",
                 (autor_id, minutos),
             ).fetchone()
         return ({"chat_id": fila[0], "foto": fila[1], "sitio": fila[2], "desde": fila[3].isoformat(),
-                 "audio_en_espera": fila[4]} if fila else None)
+                 "audio_en_espera": fila[4], "etapa": fila[5], "revisando": fila[6]} if fila else None)
+
+    # ── corrección de respuestas ──────────────────────────────────────────
+    def fijar_etapa(self, autor_id: int, etapa: str | None, revisando: str | None = None) -> None:
+        with _conexion() as conn:
+            conn.execute("UPDATE descripciones_en_curso SET etapa = %s, revisando = %s, ultima = now() "
+                         "WHERE autor_id = %s", (etapa, revisando, autor_id))
+
+    def respuestas_vigentes(self, autor_id: int, chat_id: int, foto: int) -> list[dict[str, Any]]:
+        """Las respuestas que la persona puede cambiar: las de esa foto y las de la
+        caracterización (de cualquier foto), sin las ya reemplazadas ni lo agregado
+        al final. La más reciente de cada pregunta."""
+        with _conexion() as conn:
+            filas = conn.execute(
+                "SELECT DISTINCT ON (pregunta_codigo) id, pregunta_codigo, pregunta_texto, tipo, texto, "
+                "estado_respuesta, pregunta_alcance FROM observaciones_grupo "
+                "WHERE autor_id = %s AND canal = 'privado' AND reemplazada_por IS NULL "
+                "AND pregunta_codigo IS NOT NULL AND pregunta_codigo <> 'ADICIONAL' "
+                "AND (pregunta_alcance = 'persona' OR (chat_id = %s AND foto_message_id = %s)) "
+                "ORDER BY pregunta_codigo, id DESC", (autor_id, chat_id, foto),
+            ).fetchall()
+        return [{"id": f[0], "codigo": f[1], "pregunta": f[2], "tipo": f[3], "texto": f[4], "estado": f[5],
+                 "alcance": f[6]} for f in filas]
+
+    def ultima_respondida(self, autor_id: int, chat_id: int, foto: int) -> str | None:
+        """El código de la última pregunta que respondió sobre esa foto (o de la caracterización)."""
+        with _conexion() as conn:
+            fila = conn.execute(
+                "SELECT pregunta_codigo FROM observaciones_grupo WHERE autor_id = %s AND canal = 'privado' "
+                "AND reemplazada_por IS NULL AND pregunta_codigo IS NOT NULL AND pregunta_codigo <> 'ADICIONAL' "
+                "AND (pregunta_alcance = 'persona' OR (chat_id = %s AND foto_message_id = %s)) "
+                "ORDER BY id DESC LIMIT 1", (autor_id, chat_id, foto),
+            ).fetchone()
+        return fila[0] if fila else None
+
+    def aplicar_correccion(self, id_: int) -> str | None:
+        """La respuesta `id_` corrige su pregunta: las anteriores quedan reemplazadas
+        y la persona vuelve a donde iba. Devuelve la etapa en que queda."""
+        with _conexion() as conn:
+            fila = conn.execute(
+                "SELECT autor_id, chat_id, foto_message_id, pregunta_codigo, pregunta_alcance FROM observaciones_grupo "
+                "WHERE id = %s", (id_,)).fetchone()
+            if not fila:
+                return None
+            autor_id, chat_id, foto, codigo, alcance = fila
+            conn.execute(
+                "UPDATE observaciones_grupo SET reemplazada_por = %s WHERE autor_id = %s AND canal = 'privado' "
+                "AND pregunta_codigo = %s AND id < %s AND reemplazada_por IS NULL "
+                "AND (pregunta_alcance = 'persona' OR (chat_id = %s AND foto_message_id = %s))",
+                (id_, autor_id, codigo, id_, chat_id, foto))
+            etapa = conn.execute(
+                "UPDATE descripciones_en_curso SET etapa = CASE WHEN etapa = 'corrigiendo' THEN 'ofrecer_cambio' "
+                "ELSE NULL END, revisando = NULL, ultima = now() WHERE autor_id = %s AND revisando = %s "
+                "RETURNING etapa", (autor_id, codigo)).fetchone()
+        return etapa[0] if etapa else None
 
     def respondidas(self, autor_id: int, chat_id: int, foto: int, excluir: int | None = None) -> set[str]:
         """Códigos de las preguntas que la persona ya respondió sobre esa foto
@@ -617,7 +687,9 @@ class ObservacionesGrupo:
         if foto is not None:
             condiciones.append("o.foto_message_id = %s")
             valores.append(foto)
-        donde = ("WHERE " + " AND ".join(condiciones)) if condiciones else ""
+        # Las respuestas que la persona corrigió no salen: vale la última.
+        condiciones.append("o.reemplazada_por IS NULL")
+        donde = "WHERE " + " AND ".join(condiciones)
         with _conexion() as conn:
             filas = conn.execute(
                 "SELECT o.id, g.sitio, o.chat_id, o.message_id, o.fecha AT TIME ZONE 'America/Bogota', "

@@ -20,7 +20,7 @@ logger = logging.getLogger("telegram_bot")
 
 HILOS = 4
 MAX_FUENTES = 5
-PLATAFORMA = "http://44.213.47.34/mapas"
+PLATAFORMA = "http://colflux.com/mapas"
 
 BIENVENIDA = (
     "Hola, soy el asistente de COLFLUX, el proyecto sobre el carbono en páramos, "

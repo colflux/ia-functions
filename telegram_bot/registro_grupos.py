@@ -35,8 +35,9 @@ REGISTRADO = ("Listo: este grupo queda como grupo de observación del sitio «{s
               "estudio sobre la foto y el lugar, por escrito o con notas de voz, sin ver lo que dicen los demás. Los audios se transcriben "
               "y se borran a los {dias} días; la "
               "transcripción se conserva. Para dejar de recibir descripciones: /pausar\n\n"
-              "Recomendado: en la configuración del grupo, Permisos → desactiva «Enviar mensajes» para los "
-              "miembros, para que solo el equipo publique.")
+              "Recomendado, en este orden: 1) haz administrador del grupo a este bot (si no, no podrá poner el "
+              "botón bajo las fotos); 2) en Permisos, desactiva «Enviar mensajes» para los miembros, para que "
+              "solo el equipo publique.")
 BOTON_DESCRIBIR = "✍️ Describir esta foto"
 INVITA_DESCRIBIR = "Para describir esta foto toca el botón: se abre tu chat privado con el bot."
 FOTO_NO_RELACIONADA = ("Esta foto no parece relacionada con COLFLUX (un ecosistema, plantas, agua, suelo o trabajo "
@@ -50,12 +51,14 @@ INSTRUCCIONES_PREGUNTAS = (
     "Esta es la foto del sitio «{sitio}». Te haré {total} preguntas sobre este lugar y lo que ves en la foto, una "
     "por una. Responde con tus palabras, por escrito o con una nota de voz. Si una pregunta no corresponde, toca "
     "«No aplica a esta foto»; si no sabes, toca «No sé». Lo que respondas solo lo ve el equipo del proyecto.\n\n"
+    "Si te equivocas, toca «↩️ Corregir la anterior»; y al terminar podrás cambiar cualquier respuesta.\n\n"
     "Si quieres que tus respuestas lleven el lugar desde donde las envías, toca «📍 Compartir mi ubicación».")
 INSTRUCCIONES_PERSONA = (
     "Esta es la foto del sitio «{sitio}». Antes de las preguntas sobre la foto ({total} preguntas), te haré "
     "{persona} preguntas sobre ti. Estas solo se hacen esta vez, sirven para el estudio y solo las ve el equipo del "
     "proyecto; en cualquiera puedes tocar «Prefiero no responder».\n\n"
-    "Responde con tus palabras, por escrito o con una nota de voz.")
+    "Responde con tus palabras, por escrito o con una nota de voz. Si te equivocas, toca «↩️ Corregir la "
+    "anterior»; y al terminar podrás cambiar cualquier respuesta.")
 SEGUIMOS = "Seguimos con la foto del sitio «{sitio}»: ya respondiste {respondidas} de {total} preguntas."
 SEGUIMOS_PERSONA = "Seguimos con las preguntas sobre ti: te faltan {pendientes}. Después siguen las de la foto del sitio «{sitio}»."
 YA_RESPONDIDAS = "Ya respondiste las {total} preguntas de esta foto del sitio «{sitio}»."
@@ -72,12 +75,32 @@ NO_RESPONDO = "Prefiero no responder"
 TECLADO_DESCRIPCION = {"keyboard": [[{"text": "📍 Compartir mi ubicación", "request_location": True}],
                                     [{"text": TERMINAR}]],
                        "resize_keyboard": True}
+CORREGIR_ANTERIOR = "↩️ Corregir la anterior"
+SI_CAMBIAR = "✏️ Sí, cambiar una respuesta"
+NO_TERMINAR = "✅ No, terminar"
 TECLADO_PREGUNTA = {"keyboard": [[{"text": NO_SE}, {"text": NO_APLICA}],
+                                 [{"text": CORREGIR_ANTERIOR}],
                                  [{"text": "📍 Compartir mi ubicación", "request_location": True}, {"text": TERMINAR}]],
                     "resize_keyboard": True}
 TECLADO_PERSONA = {"keyboard": [[{"text": NO_RESPONDO}],
+                                [{"text": CORREGIR_ANTERIOR}],
                                 [{"text": "📍 Compartir mi ubicación", "request_location": True}, {"text": TERMINAR}]],
                    "resize_keyboard": True}
+# Mientras cambia una respuesta no se ofrece «Corregir la anterior».
+TECLADO_CORRIGE_PREGUNTA = {"keyboard": [[{"text": NO_SE}, {"text": NO_APLICA}], [{"text": TERMINAR}]],
+                            "resize_keyboard": True}
+TECLADO_CORRIGE_PERSONA = {"keyboard": [[{"text": NO_RESPONDO}], [{"text": TERMINAR}]], "resize_keyboard": True}
+TECLADO_OFRECER = {"keyboard": [[{"text": SI_CAMBIAR}], [{"text": NO_TERMINAR}]], "resize_keyboard": True}
+TECLADO_ELEGIR = {"keyboard": [[{"text": NO_TERMINAR}]], "resize_keyboard": True}
+OFRECER = ("Antes de terminar: ¿quieres cambiar alguna de tus respuestas? Puedes cambiar cualquiera, una por una.")
+OFRECER_OTRA = "✔️ Respuesta cambiada. ¿Quieres cambiar otra?"
+CAMBIADA = "✔️ Respuesta cambiada."
+ELEGIR = "¿Cuál quieres cambiar? Escribe su número:"
+ELEGIR_DE_NUEVO = "No encontré ese número. Escribe el número de la respuesta que quieres cambiar:"
+CAMBIAR = "Cambiemos tu respuesta. Antes respondiste: «{anterior}»."
+SIN_ANTERIOR = "Todavía no hay una respuesta que corregir. Responde la pregunta:"
+MAX_LISTA_PREGUNTA = 70
+MAX_LISTA_RESPUESTA = 40
 ANOTADO = {"respondida": "✔️ Anotado.", "no_sabe": "✔️ Anotado: «No sé».", "no_aplica": "✔️ Anotado: «No aplica».",
            "no_responde": "✔️ Anotado: «Prefiero no responder»."}
 # En la pregunta final, «no» o «nada más» quiere decir que terminó.
@@ -207,7 +230,24 @@ def es_de_persona(pregunta: dict | None) -> bool:
 def teclado_de(pregunta: dict | None) -> dict:
     if not pregunta or pregunta.get("cierre"):
         return TECLADO_DESCRIPCION
+    if pregunta.get("correccion"):
+        return TECLADO_CORRIGE_PERSONA if es_de_persona(pregunta) else TECLADO_CORRIGE_PREGUNTA
     return TECLADO_PERSONA if es_de_persona(pregunta) else TECLADO_PREGUNTA
+
+
+def _corto(texto: str, maximo: int) -> str:
+    texto = " ".join((texto or "").split())
+    return texto if len(texto) <= maximo else texto[:maximo].rsplit(" ", 1)[0] + "…"
+
+
+def texto_lista(lista: list[dict]) -> str:
+    """Las respuestas numeradas para elegir cuál cambiar."""
+    lineas = []
+    for r in lista:
+        quien = "Sobre ti" if r.get("alcance") == "persona" else "Foto"
+        lineas.append(f"{r['numero']}. {quien} · {_corto(r['pregunta'], MAX_LISTA_PREGUNTA)}\n"
+                      f"   → {_corto(r['respuesta'], MAX_LISTA_RESPUESTA)}")
+    return "\n".join(lineas)
 
 
 def texto_pregunta(pregunta: dict) -> str:
@@ -562,8 +602,19 @@ class RegistroGrupos:
         texto = texto_pregunta(pregunta)
         self._tg.enviar(chat, f"{antes}\n\n{texto}" if antes else texto, teclado=teclado_de(pregunta))
 
-    def terminar(self, mensaje: dict) -> None:
+    def terminar(self, mensaje: dict, final: bool = False) -> None:
+        """«✅ Terminar»: antes de cerrar pregunta si quiere cambiar alguna respuesta
+        (si ya está en eso, o elige «No, terminar», cierra)."""
         persona, _ = autor(mensaje)
+        chat = mensaje["chat"]["id"]
+        en_curso = self.en_curso(persona)
+        if en_curso and not final and en_curso.get("etapa") not in ("ofrecer_cambio", "eligiendo"):
+            try:
+                if self._grupos.revision(persona, "ofrecer").get("ok"):
+                    self._tg.enviar(chat, OFRECER, teclado=TECLADO_OFRECER)
+                    return
+            except Exception:
+                logger.exception("No se pudo ofrecer el cambio de respuestas a %s", persona)
         datos = self._grupos.terminar_descripcion(persona) if persona else {"ok": False}
         if not datos.get("ok"):
             texto = NADA_EN_CURSO
@@ -587,10 +638,13 @@ class RegistroGrupos:
         if tipo not in ("texto", "audio"):
             self._tg.enviar(chat, SOLO_TEXTO_AUDIO, mensaje["message_id"], teclado=teclado_de(actual))
             return
+        persona, nombre = autor(mensaje)
+        etapa = en_curso.get("etapa")
+        if self._revision(mensaje, persona, etapa, texto if tipo == "texto" else "", actual):
+            return
         if tipo == "texto" and actual.get("cierre") and es_fin(texto):
             self.terminar(mensaje)
             return
-        persona, nombre = autor(mensaje)
         datos = {
             "chat_id": en_curso["chat_id"],
             "message_id": mensaje["message_id"],
@@ -648,14 +702,54 @@ class RegistroGrupos:
             self._transcriptor.encolar(resultado["id"], lambda c=contenido: c)
             self._tg.enviar(chat, AUDIO_GUARDADO_PREGUNTA if en_preguntas else AUDIO_GUARDADO, mensaje["message_id"])
             return
+        if resultado.get("etapa") == "ofrecer_cambio":
+            self._tg.enviar(chat, OFRECER_OTRA, teclado=TECLADO_OFRECER)  # cambió una respuesta al final
+            return
         if en_preguntas:
             # Respondió la pregunta: va la siguiente (o la pregunta abierta del final).
             antes = ANOTADO.get(resultado.get("estado_respuesta"), ANOTADO["respondida"])
+            if resultado.get("correccion"):
+                antes = CAMBIADA
             if es_de_persona(actual) and not es_de_persona(pregunta) and not pregunta.get("cierre"):
                 antes = f"{antes}\n\n{AHORA_FOTO}"  # terminó las preguntas sobre la persona
             self._preguntar(chat, pregunta, antes)
             return
         self._tg.enviar(chat, GUARDADO, mensaje["message_id"], teclado=TECLADO_DESCRIPCION)
+
+    def _revision(self, mensaje: dict, persona: int, etapa: str | None, texto: str, actual: dict) -> bool:
+        """Corregir la anterior y cambiar respuestas al final. True si atendió el mensaje."""
+        chat = mensaje["chat"]["id"]
+        if etapa == "ofrecer_cambio":
+            if texto == SI_CAMBIAR:
+                lista = self._grupos.revision(persona, "listar").get("lista") or []
+                self._tg.enviar(chat, f"{ELEGIR}\n\n{texto_lista(lista)}", teclado=TECLADO_ELEGIR)
+            elif texto == NO_TERMINAR or es_fin(texto):
+                self.terminar(mensaje, final=True)
+            else:
+                self._tg.enviar(chat, OFRECER, teclado=TECLADO_OFRECER)
+            return True
+        if etapa == "eligiendo":
+            if texto == NO_TERMINAR or es_fin(texto):
+                self.terminar(mensaje, final=True)
+                return True
+            numero = texto.strip().rstrip(".")
+            datos = self._grupos.revision(persona, "elegir", int(numero)) if numero.isdigit() else {"ok": False}
+            if datos.get("ok"):
+                pregunta = datos["pregunta"]
+                self._preguntar(chat, pregunta, CAMBIAR.format(anterior=_corto(pregunta.get("anterior"), 300)))
+            else:
+                lista = datos.get("lista") or self._grupos.revision(persona, "listar").get("lista") or []
+                self._tg.enviar(chat, f"{ELEGIR_DE_NUEVO}\n\n{texto_lista(lista)}", teclado=TECLADO_ELEGIR)
+            return True
+        if texto == CORREGIR_ANTERIOR:
+            datos = self._grupos.corregir_anterior(persona)
+            if datos.get("ok"):
+                pregunta = datos["pregunta"]
+                self._preguntar(chat, pregunta, CAMBIAR.format(anterior=_corto(pregunta.get("anterior"), 300)))
+            else:
+                self._preguntar(chat, actual, SIN_ANTERIOR)
+            return True
+        return False
 
     def transcrito(self, id_: int, texto: str | None, estado: str) -> None:
         """Lo llama el transcriptor al terminar un audio: guarda la transcripción
@@ -683,6 +777,12 @@ class RegistroGrupos:
         else:
             aviso = NO_TRANSCRITO
         try:
+            if resultado.get("etapa") == "ofrecer_cambio":
+                # Cambió una respuesta al final con una nota de voz.
+                self._tg.enviar(chat, OFRECER_OTRA, audio, teclado=TECLADO_OFRECER)
+                return
+            if resultado.get("correccion") and aviso == AUDIO_ANOTADO:
+                aviso = CAMBIADA
             self._tg.enviar(chat, aviso, audio)
             if es_pregunta:
                 # Sigue con la pregunta que toca: la siguiente, o la misma si el audio no la respondió.

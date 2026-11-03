@@ -136,6 +136,10 @@ def _pregunta_actual(servicio, autor_id: int, en_curso: dict, preguntas: list[di
     preguntas = preguntas_foto.cargar() if preguntas is None else preguntas
     hechas = _hechas(servicio, autor_id, en_curso, preguntas)
     actual = preguntas_foto.siguiente(preguntas, hechas)
+    if (en_curso.get("etapa") or "").startswith("corrigiendo") and en_curso.get("revisando"):
+        # Está cambiando una respuesta: la pregunta que toca es esa.
+        actual = _pregunta_a_corregir(servicio, autor_id, en_curso, preguntas)
+    actual["etapa"] = en_curso.get("etapa")
     de_foto = [p for p in preguntas if p["alcance"] == preguntas_foto.FOTO]
     actual["total_foto"] = len(de_foto)
     actual["respondidas"] = sum(1 for p in de_foto if p["codigo"] in hechas)
@@ -143,6 +147,43 @@ def _pregunta_actual(servicio, autor_id: int, en_curso: dict, preguntas: list[di
                                        and p["codigo"] not in hechas)
     actual["persona_total"] = len(preguntas) - len(de_foto)
     return actual
+
+
+def _texto_respuesta(r: dict) -> str:
+    """Lo que respondió, para recordárselo al cambiarla. De un audio no se muestra
+    la transcripción (la revisa el equipo)."""
+    especial = {"no_sabe": "No sé", "no_aplica": "No aplica a esta foto",
+                "no_responde": preguntas_foto.NO_RESPONDE}.get(r.get("estado") or "")
+    if especial:
+        return especial
+    return (r.get("texto") or "").strip() if r.get("tipo") == "texto" else "(nota de voz)"
+
+
+def _pregunta_a_corregir(servicio, autor_id: int, en_curso: dict, preguntas: list[dict]) -> dict:
+    codigo = en_curso["revisando"]
+    numero = next((i for i, p in enumerate(preguntas) if p["codigo"] == codigo), None)
+    vigentes = {r["codigo"]: r for r in servicio.respuestas_vigentes(autor_id, en_curso["chat_id"], en_curso["foto"])}
+    anterior = vigentes.get(codigo) or {}
+    if numero is not None:
+        actual = preguntas_foto.paso(preguntas, numero)
+    else:  # una pregunta que ya no está activa en el listado
+        actual = {"paso": 0, "total": len(preguntas), "codigo": codigo, "categoria": "",
+                  "pregunta": anterior.get("pregunta") or codigo, "cierre": False,
+                  "alcance": anterior.get("alcance") or preguntas_foto.FOTO, "numero_en": 0, "de": 0}
+    actual.update({"correccion": True, "anterior": _texto_respuesta(anterior) if anterior else ""})
+    return actual
+
+
+def _lista_para_cambiar(servicio, autor_id: int, en_curso: dict) -> list[dict]:
+    """Las respuestas vigentes, numeradas en el orden del listado."""
+    preguntas = preguntas_foto.cargar()
+    orden = {p["codigo"]: i for i, p in enumerate(preguntas)}
+    vigentes = sorted(servicio.respuestas_vigentes(autor_id, en_curso["chat_id"], en_curso["foto"]),
+                      key=lambda r: (orden.get(r["codigo"], len(orden)), r["codigo"]))
+    alcances = {p["codigo"]: p["alcance"] for p in preguntas}
+    return [{"numero": n, "codigo": r["codigo"], "pregunta": r["pregunta"] or r["codigo"],
+             "alcance": alcances.get(r["codigo"], r.get("alcance") or preguntas_foto.FOTO),
+             "respuesta": _texto_respuesta(r)} for n, r in enumerate(vigentes, 1)]
 
 
 def _hechas(servicio, autor_id: int, en_curso: dict, preguntas: list[dict]) -> set[str]:
@@ -267,6 +308,7 @@ def guardar_mensaje(
         actual = _pregunta_actual(servicio, mensaje.autor_id, en_curso)
         mensaje.pregunta_codigo, mensaje.pregunta_texto = actual["codigo"], actual["pregunta"]
         mensaje.pregunta_alcance = actual["alcance"]
+        mensaje.es_correccion = bool(actual.get("correccion")) or None
         mensaje.estado_respuesta = "respondida"
         if not actual["cierre"] and mensaje.tipo == "texto":
             # «No sé» y «No aplica a esta foto» (botones o escritos) responden la pregunta.
@@ -342,9 +384,13 @@ def guardar_mensaje(
                          and not actual["cierre"])
         if esperando:
             servicio.esperar_audio(mensaje.autor_id, resultado["id"])
+        elif mensaje.es_correccion and resultado.get("id"):
+            # Respuesta nueva a una pregunta que estaba cambiando: reemplaza a la anterior.
+            servicio.aplicar_correccion(resultado["id"])
         en_curso = servicio.descripcion_en_curso(mensaje.autor_id)
         salida.update({"respondio": mensaje.pregunta_codigo, "estado_respuesta": mensaje.estado_respuesta,
-                       "esperando_transcripcion": esperando,
+                       "esperando_transcripcion": esperando, "correccion": bool(mensaje.es_correccion),
+                       "etapa": (en_curso or {}).get("etapa"),
                        "pregunta": _pregunta_actual(servicio, mensaje.autor_id, en_curso) if en_curso else None})
     return salida
 
@@ -505,9 +551,13 @@ def transcripcion(datos: Transcripcion, x_grupos_token: str | None = Header(defa
                     almacen.borrar(clave)
                 except Exception:
                     logger.exception("GRUPO no se pudo borrar el audio %s", clave)
+    etapa = None
+    if ok and not borrado and (guardado or {}).get("es_correccion") and datos.estado == "lista":
+        etapa = servicio.aplicar_correccion(datos.id)  # el audio corrige su pregunta
     # La pregunta que esperaba este audio ya puede seguir (o repetirse, si se borró).
     servicio.audio_listo(datos.id)
-    return {"ok": ok, "es_descripcion": es, "borrado": borrado,
+    return {"ok": ok, "es_descripcion": es, "borrado": borrado, "etapa": etapa,
+            "correccion": bool((guardado or {}).get("es_correccion")) and not borrado,
             "pregunta_codigo": (guardado or {}).get("pregunta_codigo"), "estado_respuesta": estado_respuesta,
             "pregunta_alcance": (guardado or {}).get("pregunta_alcance")}
 
@@ -590,6 +640,57 @@ def iniciar_descripcion(datos: InicioDescripcion, x_grupos_token: str | None = H
     # Si ya había respondido parte de esta foto, sigue donde iba.
     en_curso = {"chat_id": foto["chat_id"], "foto": foto["message_id"]}
     return {"ok": True, **foto, "pregunta": _pregunta_actual(servicio, datos.autor_id, en_curso)}
+
+
+class Revision(BaseModel):
+    accion: str  # ofrecer | listar | elegir | seguir
+    numero: int | None = None
+
+
+@router.post("/privado/descripcion/{autor_id}/corregir-anterior")
+def corregir_anterior(autor_id: int, x_grupos_token: str | None = Header(default=None)) -> dict:
+    """«↩️ Corregir la anterior»: la próxima respuesta reemplaza la de la última
+    pregunta respondida; después sigue donde iba."""
+    _verificar(x_grupos_token)
+    servicio = get_observaciones_grupo()
+    en_curso = servicio.descripcion_en_curso(autor_id)
+    codigo = servicio.ultima_respondida(autor_id, en_curso["chat_id"], en_curso["foto"]) if en_curso else None
+    if not codigo:
+        return {"ok": False}
+    servicio.fijar_etapa(autor_id, "corrigiendo_anterior", codigo)
+    en_curso = servicio.descripcion_en_curso(autor_id)
+    return {"ok": True, "pregunta": _pregunta_actual(servicio, autor_id, en_curso)}
+
+
+@router.post("/privado/descripcion/{autor_id}/revision")
+def revision(autor_id: int, datos: Revision, x_grupos_token: str | None = Header(default=None)) -> dict:
+    """Al terminar: «¿quieres cambiar alguna de tus respuestas?» (ofrecer), la lista
+    numerada (listar), la que elige (elegir) o volver a las preguntas (seguir)."""
+    _verificar(x_grupos_token)
+    servicio = get_observaciones_grupo()
+    en_curso = servicio.descripcion_en_curso(autor_id)
+    if not en_curso:
+        return {"ok": False, "activa": False}
+    lista = _lista_para_cambiar(servicio, autor_id, en_curso)
+    if datos.accion == "ofrecer":
+        if lista:
+            servicio.fijar_etapa(autor_id, "ofrecer_cambio")
+        return {"ok": bool(lista), "respuestas": len(lista)}
+    if datos.accion == "listar":
+        servicio.fijar_etapa(autor_id, "eligiendo")
+        return {"ok": True, "lista": lista}
+    if datos.accion == "elegir":
+        elegida = next((r for r in lista if r["numero"] == datos.numero), None)
+        if not elegida:
+            return {"ok": False, "lista": lista}
+        servicio.fijar_etapa(autor_id, "corrigiendo", elegida["codigo"])
+        en_curso = servicio.descripcion_en_curso(autor_id)
+        return {"ok": True, "pregunta": _pregunta_actual(servicio, autor_id, en_curso)}
+    if datos.accion == "seguir":
+        servicio.fijar_etapa(autor_id, None)
+        en_curso = servicio.descripcion_en_curso(autor_id)
+        return {"ok": True, "pregunta": _pregunta_actual(servicio, autor_id, en_curso)}
+    raise HTTPException(422, "accion debe ser ofrecer, listar, elegir o seguir.")
 
 
 @router.get("/privado/descripcion/{autor_id}")
