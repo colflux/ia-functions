@@ -110,6 +110,16 @@ class ObservacionesGrupoToolProvider(ToolProvider):
             },
         )]
 
+    def _caracterizacion_de(self, filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """La caracterización (categoría 0) de todas las personas que aparecen en el
+        Excel, aunque la hayan respondido en otro grupo: se hace una sola vez por
+        persona y queda guardada donde la respondió."""
+        autores = sorted({f["autor_id"] for f in filas
+                          if f.get("autor_id") and (_es_respuesta(f) or _es_caracterizacion(f))})
+        if not autores:
+            return []
+        return self._servicio.consultar(autores=autores, alcance=preguntas_foto.PERSONA)
+
     def call_tool(self, name: str, arguments: dict[str, Any]) -> dict[str, Any]:
         if name != "consultar_observaciones_grupo":
             return {"error": f"Herramienta desconocida: {name}"}
@@ -146,7 +156,8 @@ class ObservacionesGrupoToolProvider(ToolProvider):
                                   "nombre": _slug(sitios[0]) if len(sitios) == 1 else "varios-grupos",
                                   "hojas_extra": [
                                       {"titulo": "Por persona y foto", "filas": _filas_por_persona(filas)},
-                                      {"titulo": "Caracterización", "filas": _filas_caracterizacion(filas)},
+                                      {"titulo": "Caracterización",
+                                       "filas": _filas_caracterizacion(self._caracterizacion_de(filas))},
                                       {"titulo": "Fotos", "filas": _filas_fotos(filas)},
                                       {"titulo": "Descripción IA", "filas": _filas_descripcion_ia(filas),
                                        "ajustar_texto": True},
@@ -318,8 +329,10 @@ def _filas_por_persona(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _filas_caracterizacion(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Hoja «Caracterización»: una fila por persona con sus respuestas de la
-    categoría 0 (se hacen una sola vez). Datos personales: el Excel solo se
-    descarga con la sesión iniciada en la plataforma."""
+    categoría 0 (se hacen una sola vez; `respondida_en_sitio` dice en qué grupo).
+    Recibe las filas de la caracterización de las personas del Excel (ver
+    _caracterizacion_de). Datos personales: el Excel solo se descarga con la
+    sesión iniciada en la plataforma."""
     respuestas = [f for f in filas if _es_caracterizacion(f)]
     if not respuestas:
         return []
@@ -328,7 +341,8 @@ def _filas_caracterizacion(filas: list[dict[str, Any]]) -> list[dict[str, Any]]:
     for f in respuestas:
         fila = personas.get(f["autor_id"] or f["autor"])
         if fila is None:
-            fila = {"autor": f["autor"], "respondida_el": f["fecha"], "sitio": f["sitio"], "foto": f["foto"]}
+            fila = {"autor": f["autor"], "respondida_el": f["fecha"], "respondida_en_sitio": f["sitio"],
+                    "foto": f["foto"]}
             fila.update({c: "" for c in codigos})
             personas[f["autor_id"] or f["autor"]] = fila
         texto = ESPECIALES.get(f.get("estado_respuesta")) or descripcion(f)

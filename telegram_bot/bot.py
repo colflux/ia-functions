@@ -12,6 +12,7 @@ import time
 from collections import defaultdict, deque
 from concurrent.futures import ThreadPoolExecutor
 
+from telegram_bot.alertas import AlertaConexion
 from telegram_bot.asistente import Asistente
 from telegram_bot.registro_grupos import TERMINAR, RegistroGrupos
 from telegram_bot.telegram import Telegram
@@ -66,6 +67,7 @@ class Bot:
         self._limite = LimitePorPersona(mensajes_por_hora)
         self._mensajes_por_hora = mensajes_por_hora
         self._candados: dict[int, threading.Lock] = defaultdict(threading.Lock)
+        self._alerta = AlertaConexion()
         self._nombre = ""
 
     def correr(self) -> None:
@@ -78,10 +80,12 @@ class Bot:
             while True:
                 try:
                     novedades = self._tg.mensajes_nuevos(desde)
-                except Exception:
+                except Exception as exc:
                     logger.exception("No se pudo leer Telegram; reintento en 10 s")
+                    self._alerta.fallo(exc)
                     time.sleep(10)
                     continue
+                self._alerta.ok()
                 for novedad in novedades:
                     desde = novedad["update_id"] + 1
                     if "message" in novedad:

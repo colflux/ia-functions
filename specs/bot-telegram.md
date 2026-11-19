@@ -62,7 +62,7 @@ El detalle está en `specs/grupos-observacion.md`. Lo que cambia en el bot:
   bajo cada una el botón «✍️ Describir esta foto». Lo demás que se escriba en el
   grupo no se guarda.
 - El botón abre el chat privado (`/start f<registro>`). Desde ahí, y hasta
-  «✅ Terminar» (`/terminar`) o 12 horas sin escribir, lo que la persona escriba o
+  «✅ Terminar» (`/terminar`) o 24 horas sin escribir, lo que la persona escriba o
   grabe en privado es su respuesta a las preguntas del instrumento, una por una,
   y no una pregunta al asistente. Después el chat vuelve a ser el asistente.
 - Orden en el chat privado: ubicación compartida → `/ubicacion` → `/start f<registro>`
@@ -84,6 +84,11 @@ El detalle está en `specs/grupos-observacion.md`. Lo que cambia en el bot:
   si se reinicia el servicio.
 - Si el asistente no responde, avisa que no está disponible. Si Telegram falla,
   reintenta a los 10 s.
+- **Aviso de caída** (`telegram_bot/alertas.py`): si lleva `ALERTA_MINUTOS` (10)
+  sin poder leer Telegram, deja «ALERTA TELEGRAM» en el registro y, si están
+  `ALERTA_CORREOS`, `ALERTA_SMTP_USUARIO` y `ALERTA_SMTP_CLAVE`, manda un correo;
+  al volver, «TELEGRAM RECUPERADO». Un aviso por caída. (Telegram respondió 502 a
+  @COLFLUXBOT durante horas el 17 de noviembre de 2026.)
 - El token no se escribe en los registros: se silencia el registro de peticiones de
   httpx, que incluye la URL con el token.
 
@@ -98,6 +103,7 @@ El detalle está en `specs/grupos-observacion.md`. Lo que cambia en el bot:
 | `telegram_bot/registro_grupos.py` | Grupos de observación, descripciones y preguntas en privado |
 | `telegram_bot/grupos.py` | Cliente de las rutas internas `/grupos` (con `GRUPOS_TOKEN`) |
 | `telegram_bot/transcriptor.py` | Transcripción de notas de voz con Whisper |
+| `telegram_bot/alertas.py` | Aviso cuando el bot no puede leer Telegram |
 | `docker-compose.yml`, `.env.example` | Servicio `telegram` y sus variables (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_MENSAJES_POR_HORA`, `GRUPOS_TOKEN`, `WHISPER_MODELO`, `WHISPER_HILOS`) |
 
 ## Plan por fases

@@ -120,7 +120,7 @@ send text messages»). El mensaje de registro lo dice en ese orden.
    esos comandos le responden que las transcripciones las revisa el equipo. En el
    bucket van en `telegram/<sitio>/audios/<día>/p<chat>-<mensaje>.ogg`.
 5. La descripción termina con «✅ Terminar» (o `/terminar`), con «no», «nada
-   más» o parecido en la pregunta final, o a las **12 horas** sin escribir
+   más» o parecido en la pregunta final, o a las **24 horas** sin escribir
    (`MINUTOS_DESCRIPCION`); desde ahí el chat privado vuelve a ser el asistente
    de siempre. Si terminó antes de responder todo, el bot le dice cuántas
    preguntas le faltaron.
@@ -195,7 +195,9 @@ preguntas adaptadas a la foto: quedan en el listado como inactivas).
      de pregunta (varias respuestas a la misma se unen con « | »), `ADICIONAL`,
      cuántas respondió y cuántos «No sé» y «No aplica».
    - **Caracterización:** una fila por persona con sus respuestas de la
-     categoría 0 («Prefiero no responder» cuando la saltó).
+     categoría 0 («Prefiero no responder» cuando la saltó). Trae a **todas las
+     personas que aparecen en ese Excel**, aunque la hayan respondido en otro
+     grupo (`respondida_en_sitio` dice dónde): se hace una sola vez por persona.
    - **Fotos:** cada foto con lo que ve la IA (descripción corta y atributos), el
      día de los datos, su ubicación y cuántas personas respondieron.
    - **Descripción IA:** la descripción de cada foto hecha por la IA con el mayor
@@ -206,6 +208,21 @@ preguntas adaptadas a la foto: quedan en el listado como inactivas).
      Texto ajustado en celdas anchas.
    - **Preguntas:** el listado (también las inactivas), la pregunta final, las
      respondidas que ya no están en el listado y la versión del instrumento.
+
+## Recordatorio y ventana de 24 horas
+
+La descripción en curso dura **24 horas** sin escribir (`MINUTOS_DESCRIPCION`).
+Si la persona deja la foto a medias, a las **2 horas** sin escribir
+(`HORAS_RECORDATORIO`) el bot le manda **un** recordatorio en privado: el sitio,
+cuántas preguntas le faltan, hasta cuándo puede seguir y la pregunta que toca.
+Es uno por cada pausa: si vuelve a escribir y se detiene otra vez, a las 2 horas
+recibe otro. No se le recuerda a quien ya respondió todo (solo le queda la
+pregunta abierta del final) ni a quien estaba eligiendo qué respuesta cambiar.
+
+El bot revisa cada 10 minutos `GET /grupos/privado/recordatorios` y, tras
+enviar, marca `POST /grupos/privado/descripcion/{persona}/recordado`
+(`descripciones_en_curso.recordado_el`). Si no puede enviarlo (la persona
+bloqueó el bot), no insiste en esa pausa.
 
 ## Corregir respuestas
 

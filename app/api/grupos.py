@@ -647,6 +647,36 @@ class Revision(BaseModel):
     numero: int | None = None
 
 
+@router.get("/privado/recordatorios")
+def recordatorios(x_grupos_token: str | None = Header(default=None)) -> list[dict]:
+    """Personas que dejaron una foto a medias hace más de 2 horas (y aún dentro de
+    las 24 horas): el bot les recuerda, una vez por cada pausa, la pregunta que
+    les toca. No se recuerda a quien ya respondió todo (solo le queda la pregunta
+    abierta del final) ni a quien estaba eligiendo qué respuesta cambiar."""
+    _verificar(x_grupos_token)
+    servicio = get_observaciones_grupo()
+    preguntas = preguntas_foto.cargar()
+    salida = []
+    for d in servicio.para_recordar():
+        if d.get("etapa") in ("ofrecer_cambio", "eligiendo"):
+            continue
+        pregunta = _pregunta_actual(servicio, d["autor_id"], d, preguntas)
+        faltan = (pregunta.get("total_foto", 0) - pregunta.get("respondidas", 0)
+                  + pregunta.get("persona_pendientes", 0))
+        if pregunta.get("cierre") and faltan <= 0:
+            continue
+        salida.append({"autor_id": d["autor_id"], "chat_privado": d["chat_privado"], "sitio": d["sitio"],
+                       "faltan": faltan, "vence": d["vence"], "pregunta": pregunta})
+    return salida
+
+
+@router.post("/privado/descripcion/{autor_id}/recordado")
+def recordado(autor_id: int, x_grupos_token: str | None = Header(default=None)) -> dict:
+    _verificar(x_grupos_token)
+    get_observaciones_grupo().marcar_recordado(autor_id)
+    return {"ok": True}
+
+
 @router.post("/privado/descripcion/{autor_id}/corregir-anterior")
 def corregir_anterior(autor_id: int, x_grupos_token: str | None = Header(default=None)) -> dict:
     """«↩️ Corregir la anterior»: la próxima respuesta reemplaza la de la última
