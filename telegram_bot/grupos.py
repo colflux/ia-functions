@@ -97,5 +97,11 @@ class Grupos:
     def corregir_registro(self, id_: int, texto: str, por: str) -> dict:
         return self._ok(self._http.post(f"{self._url}/registros/{id_}/correccion", json={"texto": texto, "por": por}))
 
+    def recordatorios(self) -> list[dict]:
+        return self._ok(self._http.get(f"{self._url}/privado/recordatorios"))
+
+    def recordado(self, autor_id: int) -> dict:
+        return self._ok(self._http.post(f"{self._url}/privado/descripcion/{autor_id}/recordado"))
+
     def depurar_audios(self) -> dict:
         return self._ok(self._http.post(f"{self._url}/depurar-audios"))

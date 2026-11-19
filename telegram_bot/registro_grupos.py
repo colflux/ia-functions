@@ -8,7 +8,8 @@ listado editable (app/data/preguntas_foto.csv en la api), con «No sé» y «No
 aplica a esta foto», y al final le pregunta si observa algo más. Responde por
 escrito o con notas de voz (los audios los transcribe Whisper). Así nadie ve, ni
 copia, lo que respondieron los demás. La descripción sigue abierta hasta que la
-persona toca «Terminar» o pasan 12 horas sin escribir; después el chat privado
+persona toca «Terminar» o pasan 24 horas sin escribir (a las 2 horas sin
+escribir el bot le recuerda que la dejó a medias); después el chat privado
 vuelve a ser el asistente de siempre. Si la deja a medias, al volver a tocar el
 botón sigue donde iba.
 """
@@ -27,6 +28,7 @@ logger = logging.getLogger("telegram_bot.grupos")
 
 CACHE_ESTADO_S = 60
 DEPURAR_CADA_S = 24 * 3600
+RECORDAR_CADA_S = 10 * 60  # cada cuánto se revisa quién dejó una foto a medias
 MAX_DESCARGA = 20 * 1024 * 1024
 
 REGISTRADO = ("Listo: este grupo queda como grupo de observación del sitio «{sitio}».\n\n"
@@ -69,6 +71,9 @@ AHORA_FOTO = ("Gracias, terminamos las preguntas sobre ti. Ahora las preguntas s
 PREGUNTA_FINAL = ("Para terminar: {pregunta}\n\nSi es así, descríbelo por escrito o con una nota de voz (puedes "
                   "enviar varios mensajes). Si no, toca «✅ Terminar».")
 TERMINAR = "✅ Terminar"
+RECORDATORIO = ("Hola 👋 Te quedó a medias la foto del sitio «{sitio}»: te faltan {faltan} preguntas. Puedes "
+                "seguir cuando quieras, hasta el {vence} (hora de Colombia). Si prefieres dejarla así, toca "
+                "«✅ Terminar». Seguimos con:")
 NO_SE = "No sé"
 NO_APLICA = "No aplica a esta foto"
 NO_RESPONDO = "Prefiero no responder"
@@ -361,6 +366,36 @@ class RegistroGrupos:
 
     def iniciar(self) -> None:
         threading.Thread(target=self._mantenimiento, name="grupos", daemon=True).start()
+        threading.Thread(target=self._recordar, name="recordatorios", daemon=True).start()
+
+    def _recordar(self) -> None:
+        """Cada 10 minutos: a quien dejó una foto a medias hace más de 2 horas le
+        recuerda (una vez por cada pausa) la pregunta que le toca."""
+        while True:
+            time.sleep(RECORDAR_CADA_S)
+            self.recordar_pendientes()
+
+    def recordar_pendientes(self) -> int:
+        try:
+            pendientes = self._grupos.recordatorios()
+        except Exception:
+            logger.warning("No se pudieron leer los recordatorios pendientes")
+            return 0
+        for r in pendientes:
+            try:
+                pregunta = r.get("pregunta") or {}
+                self._tg.enviar(r["chat_privado"], RECORDATORIO.format(
+                    sitio=r["sitio"], faltan=r["faltan"], vence=r["vence"]))
+                self._preguntar(r["chat_privado"], pregunta)
+                logger.info("Recordatorio enviado a %s (%s, faltan %s)", r["autor_id"], r["sitio"], r["faltan"])
+            except Exception:
+                # Si no se pudo (p. ej. la persona bloqueó el bot), no se insiste en esta pausa.
+                logger.warning("No se pudo enviar el recordatorio a %s", r["autor_id"])
+            try:
+                self._grupos.recordado(r["autor_id"])
+            except Exception:
+                logger.warning("No se pudo marcar el recordatorio de %s", r["autor_id"])
+        return len(pendientes)
 
     def _mantenimiento(self) -> None:
         # Al arrancar: audios que quedaron sin transcribir. Cada día: borrar los

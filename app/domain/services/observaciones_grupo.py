@@ -13,7 +13,8 @@ Descripciones en privado: para que nadie copie lo que dijeron los demás, el
 grupo queda solo para que el equipo envíe las fotos. Bajo cada foto el bot pone
 un botón que abre el chat privado con él; ahí cada persona describe la foto
 (texto o nota de voz) mientras dure su «descripción en curso» (hasta que toque
-«Terminar» o pasen 12 horas sin escribir). Esos mensajes se guardan con el
+«Terminar» o pasen 24 horas sin escribir; a las 2 horas sin escribir el bot
+le manda un recordatorio). Esos mensajes se guardan con el
 chat_id del grupo y la foto que describen, canal = 'privado' y chat_origen = el
 chat privado; su message_id es el del chat privado, por eso la unicidad es
 (chat_id, message_id) para lo del grupo y (chat_origen, message_id) para lo
@@ -57,7 +58,9 @@ TIPOS = ("texto", "foto", "audio", "ubicacion", "consulta", "otro")
 HORAS_UBICACION = 12
 # Una descripción en privado sigue abierta mientras la persona escriba; tras
 # este tiempo sin mensajes, lo que escriba vuelve a ser una pregunta al asistente.
-MINUTOS_DESCRIPCION = 12 * 60
+MINUTOS_DESCRIPCION = 24 * 60
+# A las cuántas horas sin escribir el bot le recuerda a la persona que dejó la foto a medias.
+HORAS_RECORDATORIO = 2
 # Respuestas que no describen nada pero sí responden la pregunta.
 SIN_DESCRIPCION = ("no_sabe", "no_aplica", "no_responde")
 # Descripción detallada de cada foto por la IA (hoja «Descripción IA» del Excel):
@@ -173,6 +176,8 @@ _TABLAS = (
     # 'ofrecer_cambio', 'eligiendo' o 'corrigiendo'; revisando = código que corrige.
     "ALTER TABLE descripciones_en_curso ADD COLUMN IF NOT EXISTS etapa TEXT",
     "ALTER TABLE descripciones_en_curso ADD COLUMN IF NOT EXISTS revisando TEXT",
+    # Cuándo se le recordó a la persona que dejó la foto a medias (uno por cada pausa).
+    "ALTER TABLE descripciones_en_curso ADD COLUMN IF NOT EXISTS recordado_el TIMESTAMPTZ",
     "ALTER TABLE descripciones_en_curso ADD COLUMN IF NOT EXISTS audio_en_espera INTEGER",
     # Descripción detallada de la foto por la IA, con el modelo que la hizo y cuándo.
     "ALTER TABLE observaciones_grupo ADD COLUMN IF NOT EXISTS ia_detalle JSONB",
@@ -533,6 +538,30 @@ class ObservacionesGrupo:
         return ({"chat_id": fila[0], "foto": fila[1], "sitio": fila[2], "desde": fila[3].isoformat(),
                  "audio_en_espera": fila[4], "etapa": fila[5], "revisando": fila[6]} if fila else None)
 
+    def para_recordar(self, horas: int = HORAS_RECORDATORIO,
+                      minutos: int = MINUTOS_DESCRIPCION) -> list[dict[str, Any]]:
+        """Descripciones abiertas sin escribir desde hace `horas` (y aún dentro de
+        la ventana) a las que no se les ha recordado desde su última actividad."""
+        with _conexion() as conn:
+            filas = conn.execute(
+                "SELECT d.autor_id, d.chat_privado, d.chat_id, d.foto_message_id, g.sitio, d.desde, "
+                "d.audio_en_espera, d.etapa, d.revisando, "
+                "to_char((d.ultima + make_interval(mins => %s)) AT TIME ZONE 'America/Bogota', "
+                "'DD/MM \"a las\" HH24:MI') "
+                "FROM descripciones_en_curso d JOIN grupos_observacion g USING (chat_id) "
+                "WHERE g.activo AND d.ultima < now() - make_interval(hours => %s) "
+                "AND d.ultima > now() - make_interval(mins => %s) "
+                "AND (d.recordado_el IS NULL OR d.recordado_el < d.ultima)",
+                (minutos, horas, minutos),
+            ).fetchall()
+        return [{"autor_id": f[0], "chat_privado": f[1], "chat_id": f[2], "foto": f[3], "sitio": f[4],
+                 "desde": f[5].isoformat(), "audio_en_espera": f[6], "etapa": f[7], "revisando": f[8],
+                 "vence": f[9]} for f in filas]
+
+    def marcar_recordado(self, autor_id: int) -> None:
+        with _conexion() as conn:
+            conn.execute("UPDATE descripciones_en_curso SET recordado_el = now() WHERE autor_id = %s", (autor_id,))
+
     # ── corrección de respuestas ──────────────────────────────────────────
     def fijar_etapa(self, autor_id: int, etapa: str | None, revisando: str | None = None) -> None:
         with _conexion() as conn:
@@ -670,8 +699,17 @@ class ObservacionesGrupo:
 
     # ── consulta ──────────────────────────────────────────────────────────
     def consultar(self, sitio: str = "", desde: date | None = None, hasta: date | None = None,
-                  foto: int | None = None, chat_id: int | None = None) -> list[dict[str, Any]]:
+                  foto: int | None = None, chat_id: int | None = None, autores: list[int] | None = None,
+                  alcance: str | None = None) -> list[dict[str, Any]]:
+        """`autores` y `alcance` sirven para traer, por ejemplo, la caracterización
+        (alcance 'persona') de ciertas personas, sin importar en qué grupo la respondieron."""
         condiciones, valores = [], []
+        if autores is not None:
+            condiciones.append("o.autor_id = ANY(%s)")
+            valores.append(list(autores))
+        if alcance:
+            condiciones.append("o.pregunta_alcance = %s")
+            valores.append(alcance)
         if sitio:
             condiciones.append("g.sitio ILIKE %s")
             valores.append(f"%{sitio}%")

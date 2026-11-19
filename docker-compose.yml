@@ -54,6 +54,14 @@ services:
       WHISPER_MODELO: ${WHISPER_MODELO:-small}
       WHISPER_HILOS: ${WHISPER_HILOS:-2}
       WHISPER_CARPETA: /modelos
+      # Aviso si el bot lleva ALERTA_MINUTOS sin poder leer Telegram (siempre en el
+      # registro; por correo solo si están ALERTA_CORREOS y la cuenta SMTP).
+      ALERTA_MINUTOS: ${ALERTA_MINUTOS:-10}
+      ALERTA_CORREOS: ${ALERTA_CORREOS:-}
+      ALERTA_SMTP_HOST: ${ALERTA_SMTP_HOST:-smtp.gmail.com}
+      ALERTA_SMTP_PUERTO: ${ALERTA_SMTP_PUERTO:-587}
+      ALERTA_SMTP_USUARIO: ${ALERTA_SMTP_USUARIO:-}
+      ALERTA_SMTP_CLAVE: ${ALERTA_SMTP_CLAVE:-}
     depends_on:
       - api
     volumes:
