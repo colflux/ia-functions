@@ -20,6 +20,11 @@ HISTORY_MINUTES = 30
 
 CONFIRMATIONS = {"confirmo", "confirmar", "si confirmo", "sí confirmo", "sí, confirmo"}
 
+# Tools que escriben en el backend en nombre de la persona que chatea: el
+# token nunca lo ve el LLM (no forma parte del schema que se le expone),
+# se inyecta acá mismo justo antes de ejecutar la tool.
+AUTH_REQUIRED_TOOLS = {"proponer_mapeo_columnas", "confirmar_mapeo_columnas"}
+
 SYSTEM_PROMPT = (
     "Eres el asistente de colflux, una plataforma de monitoreo de flujos de "
     "gases de efecto invernadero en ecosistemas colombianos. Responde en "
@@ -28,7 +33,16 @@ SYSTEM_PROMPT = (
     "antes de responder; si no hay ninguna relevante o la pregunta es "
     "general (saludos, conversación), responde con naturalidad. Nunca "
     "inventes cifras: si una herramienta no encuentra datos, dilo tal cual. "
-    "Cuando cites un dato, menciona su fuente."
+    "Cuando cites un dato, menciona su fuente.\n\n"
+    "Si te preguntan por el mapeo de columnas de una carga del Formulario "
+    "web (tienes el carga_id), usa proponer_mapeo_columnas para traer las "
+    "columnas del archivo y el catálogo de campos del modelo de datos, y "
+    "propón tú mismo, en texto, a qué campo destino corresponde cada "
+    "columna (razona por nombre y valores de muestra, no inventes campos "
+    "que no estén en el catálogo). Muéstrale la propuesta completa a la "
+    "persona antes de guardar nada. Solo llama confirmar_mapeo_columnas "
+    "después de que la persona apruebe explícitamente la propuesta (o los "
+    "ajustes que pida), nunca antes."
 )
 
 
@@ -43,11 +57,11 @@ class AgentOrchestrator:
         self._tools = tools
         self._conversations = conversations
 
-    def respond(self, question: str, external_user_id: str) -> dict:
+    def respond(self, question: str, external_user_id: str, token: str | None = None) -> dict:
         text = (question or "").strip()
 
         if text.lower().rstrip(".!") in CONFIRMATIONS:
-            return self._resolve_confirmation(external_user_id)
+            return self._resolve_confirmation(external_user_id, token)
 
         history = self._conversations.recent_messages(external_user_id, HISTORY_TURNS, HISTORY_MINUTES)
         messages = [*history, Message(role="user", text=text)]
@@ -65,15 +79,19 @@ class AgentOrchestrator:
             messages.append(Message(role="assistant", text=reply.text, tool_calls=reply.tool_calls))
             for call in reply.tool_calls:
                 tools_used.append(call.name)
-                result = self._tools.call_tool(call.name, call.arguments)
+                arguments = call.arguments
+                if call.name in AUTH_REQUIRED_TOOLS:
+                    arguments = {**arguments, "token": token}
+                result = self._tools.call_tool(call.name, arguments)
 
                 result_sources = result.pop("sources", None)
                 if result_sources:
                     sources.extend(result_sources)
 
                 proposal = result.pop("pending_confirmation", None)
-                if proposal:
-                    pending = PendingConfirmation(id="", tool_name="confirmar_medicion", arguments=proposal)
+                confirm_tool = result.pop("confirm_tool", None)
+                if proposal and confirm_tool:
+                    pending = PendingConfirmation(id="", tool_name=confirm_tool, arguments=proposal)
 
                 messages.append(
                     Message(
@@ -99,14 +117,17 @@ class AgentOrchestrator:
             "pending_confirmation": pending.arguments if pending else None,
         }
 
-    def _resolve_confirmation(self, external_user_id: str) -> dict:
+    def _resolve_confirmation(self, external_user_id: str, token: str | None = None) -> dict:
         pending = self._conversations.latest_pending(external_user_id)
         if not pending:
             answer = "No hay ninguna propuesta pendiente de confirmar."
             self._conversations.save_turn(external_user_id, "confirmo", answer, [], None)
             return {"answer": answer, "sources": [], "tools_used": [], "pending_confirmation": None}
 
-        result = self._tools.call_tool(pending.tool_name, pending.arguments)
+        arguments = pending.arguments
+        if pending.tool_name in AUTH_REQUIRED_TOOLS:
+            arguments = {**arguments, "token": token}
+        result = self._tools.call_tool(pending.tool_name, arguments)
         self._conversations.resolve_pending(pending.id)
 
         answer = result.get("mensaje") or result.get("error", "Listo.")

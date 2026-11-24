@@ -16,6 +16,11 @@ class IngestResponse(BaseModel):
 class ChatRequest(BaseModel):
     message: str
     usuario: str = "anonimo"
+    token: str | None = None
+    """Token `Authorization: Token <token>` del usuario autenticado en el
+    backend Django (el mismo que usa en /reportar). Solo se reenvía a las
+    tools que escriben en el backend en su nombre (ver AUTH_REQUIRED_TOOLS
+    en agent_orchestrator.py); nunca se expone al LLM."""
 
 
 class Source(BaseModel):

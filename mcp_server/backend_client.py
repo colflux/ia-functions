@@ -9,9 +9,20 @@ from mcp_server.config import BACKEND_API_BASE_URL
 GASES = {"CO2", "CH4", "N2O"}
 
 
-def _get(path: str, params: dict | None = None) -> dict:
+def _get(path: str, params: dict | None = None, token: str | None = None) -> dict:
+    headers = {"Authorization": f"Token {token}"} if token else {}
     with httpx.Client(base_url=BACKEND_API_BASE_URL, timeout=30) as client:
-        response = client.get(path, params={k: v for k, v in (params or {}).items() if v is not None})
+        response = client.get(
+            path, params={k: v for k, v in (params or {}).items() if v is not None}, headers=headers,
+        )
+        response.raise_for_status()
+        return response.json()
+
+
+def _post(path: str, json_body: dict, token: str | None = None) -> dict:
+    headers = {"Authorization": f"Token {token}"} if token else {}
+    with httpx.Client(base_url=BACKEND_API_BASE_URL, timeout=30) as client:
+        response = client.post(path, json=json_body, headers=headers)
         response.raise_for_status()
         return response.json()
 
@@ -62,3 +73,19 @@ def get_series(gas: str | None = None, desde: str | None = None,
                 hasta: str | None = None, sitio: int | None = None) -> list[dict]:
     data = _get("/api/geo/series/", {"gas": gas, "desde": desde, "hasta": hasta, "sitio": sitio})
     return data.get("resultados", [])
+
+
+def get_campos_destino() -> dict:
+    # campos_destino ya no enumera instancias FK (ver historial de la tarea:
+    # ese N+1 hacía tardar ~54s y agotaba el timeout de gunicorn). Ahora solo
+    # devuelve la estructura estática del catálogo, suficiente para proponer
+    # a qué campo corresponde cada columna del archivo.
+    return _get("/api/etl/campos-destino/")
+
+
+def get_carga_ia(carga_id: int, token: str) -> dict:
+    return _get(f"/api/ia-carga/{carga_id}/", token=token)
+
+
+def confirmar_mapeo_ia(carga_id: int, mapeos: list[dict], token: str) -> dict:
+    return _post(f"/api/ia-carga/{carga_id}/confirmar/", {"mapeos": mapeos}, token=token)

@@ -17,7 +17,7 @@ def ingest(payload: IngestRequest) -> IngestResponse:
 
 @router.post("/chat", response_model=ChatResponse)
 def chat(payload: ChatRequest) -> ChatResponse:
-    result = get_orchestrator().respond(payload.message, payload.usuario)
+    result = get_orchestrator().respond(payload.message, payload.usuario, token=payload.token)
     return ChatResponse(
         answer=result["answer"],
         sources=result["sources"],
